@@ -3,10 +3,9 @@
 /**
  * dsh-tasks — Client half
  *
- * Registers a `settings.section` management page and a `sidebar.footer.action`
- * button opening the same surface as a full-page overlay. Both render over
- * one component-local store; data arrives from the Host half through plain
- * `fetch` on `/dsh-tasks/api` (the bundle runs in the real page, not a
+ * Registers a `settings.section` management page. The same surface renders
+ * inside the harness settings panel; data arrives from the Host half through
+ * plain `fetch` on `/dsh-tasks/api` (the bundle runs in the real page, not a
  * sandbox). Workspace options are fetched from the Host's
  * `/dsh-tasks/api/workspaces` route.
  *
@@ -188,7 +187,6 @@ styles.insert(`
  *   .si-btn            — secondary / outline / ghost, all uses color-mix
  *   .si-btn-primary    — "新建定时任务" / "保存" / form submit; brand accent
  *   .si-btn-danger     — "删除"; error-state tint
- *   .si-pageClose      — header close "✕"; ghost with hover overlay
  *   .si-form input, select, textarea — surface-2 surface, label-primary text
  *
  * Hover / active overlays are always color-mixed from the base token, so
@@ -269,22 +267,6 @@ styles.insert(`
 .si-hint{font-size:12px;color:var(--dsw-alias-label-secondary)}
 .si-checkbox{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dsw-alias-label-secondary)}
 .si-formActions{display:flex;gap:8px}
-.si-page{position:fixed;inset:0;z-index:1000;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1)}
-.si-pageHeader{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 20px;border-bottom:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);flex-shrink:0}
-.si-pageTitle{font-size:17px;font-weight:600;margin:0;color:var(--dsw-alias-label-primary)}
-.si-pageClose{display:flex;align-items:center;justify-content:center;width:28px;height:28px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background .16s,color .16s}
-.si-pageClose:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary) 12%,transparent);color:var(--dsw-alias-label-primary)}
-.si-pageBody{flex:1;overflow:auto;padding:24px 20px;display:flex;justify-content:center}
-
-/* Sidebar footer trigger: renders inside the sidebar footer Slot, so it must
-   read as a sidebar row, not a surface card. The base text follows
-   label-primary; hover lifts the background with a theme-derived overlay and
-   swaps the text color so it remains readable on either light or dark theme. */
-.si-sidebarTrigger{display:flex;align-items:center;gap:6px;width:100%;padding:8px 12px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-primary);font-size:13px;text-align:left;cursor:pointer;transition:background .16s,border-color .16s,color .16s}
-.si-sidebarTrigger:hover:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent);border-color:color-mix(in srgb,var(--dsw-alias-label-primary) 18%,transparent)}
-.si-sidebarTrigger:active:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-label-primary) 18%,transparent)}
-.si-sidebarTrigger:focus-visible{outline:none;border-color:var(--dsw-alias-brand-primary)}
-.si-sidebarTriggerIcon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;color:var(--dsw-alias-label-secondary);font-size:14px;line-height:1}
 `)
 
 async function readJson(response) {
@@ -706,31 +688,6 @@ module.exports = {
       )
     }
 
-    /** Full-page management overlay. */
-    function ScheduledItemsPage() {
-      const [open, setOpen] = React.useState(false)
-      return React.createElement(React.Fragment, null,
-        React.createElement('button', {
-          type: 'button',
-          className: 'si-sidebarTrigger',
-          'aria-label': t('nav'),
-          onClick: () => setOpen(true),
-        },
-          React.createElement('span', { className: 'si-sidebarTriggerIcon', 'aria-hidden': 'true' }, '⏱'),
-          React.createElement('span', null, t('nav'))
-        ),
-        open && React.createElement('div', { className: 'si-page', role: 'dialog', 'aria-modal': 'true' },
-          React.createElement('div', { className: 'si-pageHeader' },
-            React.createElement('h2', { className: 'si-pageTitle' }, t('title')),
-            React.createElement('button', { type: 'button', className: 'si-pageClose', 'aria-label': t('close'), onClick: () => setOpen(false) }, '✕')
-          ),
-          React.createElement('div', { className: 'si-pageBody' },
-            React.createElement(ScheduledItemsPanel, null)
-          )
-        )
-      )
-    }
-
     // Settings page.
     slots.inject('settings.section', () => slots.register(
       {
@@ -741,17 +698,6 @@ module.exports = {
         locale: LOCALE_NS,
       },
       () => React.createElement(ScheduledItemsPanel, null)
-    ))
-
-    // Sidebar footer action: full-page management overlay.
-    slots.inject('sidebar.footer.action', () => slots.register(
-      {
-        name: 'sidebar.footer.action',
-        id: '@weibaohui/dsh-tasks',
-        order: 30,
-        locale: LOCALE_NS,
-      },
-      () => React.createElement(ScheduledItemsPage, null)
     ))
   },
 }

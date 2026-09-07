@@ -1,6 +1,6 @@
 {
   "name": "@weibaohui/dsh-tasks",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "dsh 插件 · 定时任务：用 cron 表达式定时执行提示词，到点自动开一个新 agent 会话替你干活，也可随时手动立即执行；支持绑定工作区、会话按任务自动命名、cron 即时校验与全屏管理页。",
   "license": "MIT",
   "keywords": [
