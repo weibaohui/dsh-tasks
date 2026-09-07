@@ -150,9 +150,9 @@ window.__ModuleLoader__.load({
     /**
      * dsh-tasks — Client half
      *
-     * Registers a `settings.section` — the management surface lives in the
-     * settings window (pair it with dsh-settings-ui to size it up). It renders
-     * over one component-local store; data arrives from the Host half through plain
+     * Registers a `settings.section` management page and a `sidebar.footer.action`
+     * button opening the same surface as a full-page overlay. Both render over
+     * one component-local store; data arrives from the Host half through plain
      * `fetch` on `/dsh-tasks/api` (the bundle runs in the real page, not a
      * sandbox). Workspace options are fetched from the Host's
      * `/dsh-tasks/api/workspaces` route.
@@ -198,11 +198,12 @@ window.__ModuleLoader__.load({
           cronDaily: '每天',
           cronWeekly: '每周',
           cronCustom: '自定义',
-          cronAtMinute: '每小时的第',
+          cronAtMinute: '小时的第',
           cronMinuteUnit: '分',
           cronEvery: '每隔',
           cronMinutesUnit: '分钟',
-          cronAt: '时间',
+          hourField: '小时',
+          minuteField: '分钟',
           presetHourly: '每小时整点',
           presetMin30: '每 30 分钟',
           presetDaily9: '每天 9:00',
@@ -235,68 +236,71 @@ window.__ModuleLoader__.load({
     }
 
     const EN = {
-      nav: 'Scheduled items',
-      title: 'Scheduled items',
-      intro: 'Prompt a fresh agent session on a cron schedule — or run it right now.',
-      loading: 'Loading scheduled items…',
-      error: 'Could not reach the dsh-tasks service.',
-      empty: 'No scheduled items yet. Create your first one below.',
+      nav: 'Scheduled Tasks',
+      title: 'Scheduled Tasks',
+      intro: 'Send a prompt to a fresh agent session on a cron schedule — or run it right now.',
+      loading: 'Loading scheduled tasks…',
+      error: 'Could not reach the scheduled tasks service.',
+      empty: 'No scheduled tasks yet. Create your first one to get started.',
       retry: 'Retry',
-      newItem: 'New scheduled item',
-      editItem: 'Edit scheduled item',
+      newItem: 'New scheduled task',
+      editItem: 'Edit scheduled task',
       save: 'Save',
       saving: 'Saving…',
       cancel: 'Cancel',
       delete: 'Delete',
       running: 'Running…',
       runNow: 'Run now',
-          lastRun: 'Last run',
-          neverRun: 'Never',
-          failed: 'failed',
-          runHistory: 'Run history',
-          runOk: 'ok',
-          runFail: 'failed',
-          cronLabel: 'Cron schedule',
-          cronHint: 'Five-field croner expression (min hour dom month dow), e.g. "0 9 * * *" for 09:00 daily.',
-          cronPresets: 'Quick presets',
-          cronHourly: 'Hourly',
-          cronDaily: 'Daily',
-          cronWeekly: 'Weekly',
-          cronCustom: 'Custom',
-          cronAtMinute: 'At minute',
-          cronMinuteUnit: 'past the hour',
-          cronEvery: 'Every',
-          cronMinutesUnit: 'minutes',
-          cronAt: 'At',
-          presetHourly: 'Every hour',
-          presetMin30: 'Every 30 min',
-          presetDaily9: 'Daily 9:00',
-          presetWeekday830: 'Weekdays 8:30',
-          presetMon10: 'Mondays 10:00',
-          wd1: 'Mo', wd2: 'Tu', wd3: 'We', wd4: 'Th', wd5: 'Fr', wd6: 'Sa', wd0: 'Su',
-          wdWorkday: 'weekday',
-          listSep: ', ',
-          sumMin: 'Every {n} minutes',
-          sumHour: 'At minute {m} past every hour',
-          sumDaily: 'Daily at {t}',
-          sumWeekly: 'Every {w} at {t}',
-          sumWeeklyWorkday: 'Weekdays at {t}',
-          sumCustom: 'Custom: {raw}',
-          sumEmpty: 'Pick or type a schedule',
-          nextRuns: 'Next {n} runs',
+      lastRun: 'Last run',
+      neverRun: 'Never',
+      failed: 'failed',
+      runHistory: 'Run history',
+      runOk: 'OK',
+      runFail: 'Failed',
+      cronLabel: 'Cron schedule',
+      cronHint: 'Five-field cron expression (minute hour day month weekday), e.g. "0 9 * * *" runs daily at 09:00.',
+      cronPresets: 'Quick presets',
+      cronHourly: 'Hourly',
+      cronDaily: 'Daily',
+      cronWeekly: 'Weekly',
+      cronCustom: 'Custom',
+      // Hourly row concatenates as: Every [1] hour at minute [09] — or Every [30] minutes.
+      cronEvery: 'Every',
+      cronAtMinute: 'hour at minute',
+      cronMinuteUnit: '',
+      cronMinutesUnit: 'minutes',
+      // aria-labels for the hour/minute selects in the daily & weekly pickers.
+      hourField: 'Hour',
+      minuteField: 'Minute',
+      presetHourly: 'Every hour',
+      presetMin30: 'Every 30 min',
+      presetDaily9: 'Daily at 9:00',
+      presetWeekday830: 'Weekdays at 8:30',
+      presetMon10: 'Mondays at 10:00',
+      wd1: 'Mon', wd2: 'Tue', wd3: 'Wed', wd4: 'Thu', wd5: 'Fri', wd6: 'Sat', wd0: 'Sun',
+      wdWorkday: 'weekday',
+      listSep: ', ',
+      sumMin: 'Every {n} minutes',
+      sumHour: 'Every hour at minute {m}',
+      sumDaily: 'Daily at {t}',
+      sumWeekly: 'Weekly on {w} at {t}',
+      sumWeeklyWorkday: 'Weekdays at {t}',
+      sumCustom: 'Custom: {raw}',
+      sumEmpty: 'Pick or type a schedule',
+      nextRuns: 'Next {n} runs',
       titleLabel: 'Title',
       titlePlaceholder: 'e.g. Morning standup notes',
       promptLabel: 'Prompt',
-      promptPlaceholder: 'What should the agent do when this item runs?',
+      promptPlaceholder: 'What should the agent do when this task runs?',
       enabledLabel: 'Enabled',
-      enabledHint: 'Disabled items keep their data but never fire on schedule.',
+      enabledHint: 'Disabled tasks keep their data but never run on schedule.',
       invalidForm: 'Title, prompt, and cron schedule are required.',
-      deleteConfirm: 'Delete this scheduled item?',
+      deleteConfirm: 'Delete this scheduled task?',
       close: 'Close',
       workspace: 'Workspace',
       workspaceLabel: 'Workspace',
-      workspaceNone: 'No workspace (default directory)',
-      workspaceHint: 'Executions spawn a session in this workspace and appear under it in the sidebar.',
+      workspaceNone: 'None (default directory)',
+      workspaceHint: 'Each run starts a new session in this workspace; sessions appear grouped under it in the sidebar.',
     }
 
     const LOCALE_DICT = { zh: ZH, en: EN }
@@ -331,6 +335,7 @@ window.__ModuleLoader__.load({
      *   .si-btn            — secondary / outline / ghost, all uses color-mix
      *   .si-btn-primary    — "新建定时任务" / "保存" / form submit; brand accent
      *   .si-btn-danger     — "删除"; error-state tint
+     *   .si-pageClose      — header close "✕"; ghost with hover overlay
      *   .si-form input, select, textarea — surface-2 surface, label-primary text
      *
      * Hover / active overlays are always color-mixed from the base token, so
@@ -411,7 +416,22 @@ window.__ModuleLoader__.load({
     .si-hint{font-size:12px;color:var(--dsw-alias-label-secondary)}
     .si-checkbox{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dsw-alias-label-secondary)}
     .si-formActions{display:flex;gap:8px}
+    .si-page{position:fixed;inset:0;z-index:1000;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1)}
+    .si-pageHeader{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 20px;border-bottom:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);flex-shrink:0}
+    .si-pageTitle{font-size:17px;font-weight:600;margin:0;color:var(--dsw-alias-label-primary)}
+    .si-pageClose{display:flex;align-items:center;justify-content:center;width:28px;height:28px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background .16s,color .16s}
+    .si-pageClose:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary) 12%,transparent);color:var(--dsw-alias-label-primary)}
+    .si-pageBody{flex:1;overflow:auto;padding:24px 20px;display:flex;justify-content:center}
 
+    /* Sidebar footer trigger: renders inside the sidebar footer Slot, so it must
+       read as a sidebar row, not a surface card. The base text follows
+       label-primary; hover lifts the background with a theme-derived overlay and
+       swaps the text color so it remains readable on either light or dark theme. */
+    .si-sidebarTrigger{display:flex;align-items:center;gap:6px;width:100%;padding:8px 12px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-primary);font-size:13px;text-align:left;cursor:pointer;transition:background .16s,border-color .16s,color .16s}
+    .si-sidebarTrigger:hover:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent);border-color:color-mix(in srgb,var(--dsw-alias-label-primary) 18%,transparent)}
+    .si-sidebarTrigger:active:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-label-primary) 18%,transparent)}
+    .si-sidebarTrigger:focus-visible{outline:none;border-color:var(--dsw-alias-brand-primary)}
+    .si-sidebarTriggerIcon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;color:var(--dsw-alias-label-secondary);font-size:14px;line-height:1}
     `)
 
     async function readJson(response) {
@@ -529,12 +549,12 @@ window.__ModuleLoader__.load({
 
               const timeSelects = h(React.Fragment, null,
                 h('select', {
-                  'aria-label': t('cronAt'), value: model.hour ?? 9, disabled,
+                  'aria-label': t('hourField'), value: model.hour ?? 9, disabled,
                   onChange: (e) => emit({ ...model, hour: Number(e.target.value) }),
                 }, HOURS.map((n) => h('option', { key: n, value: n }, pad2(n)))),
                 h('span', null, ':'),
                 h('select', {
-                  'aria-label': t('cronAtMinute'), value: model.minute ?? 0, disabled,
+                  'aria-label': t('minuteField'), value: model.minute ?? 0, disabled,
                   onChange: (e) => emit({ ...model, minute: Number(e.target.value) }),
                 }, MINUTES.map((n) => h('option', { key: n, value: n }, pad2(n))))
               )
@@ -833,6 +853,31 @@ window.__ModuleLoader__.load({
           )
         }
 
+        /** Full-page management overlay. */
+        function ScheduledItemsPage() {
+          const [open, setOpen] = React.useState(false)
+          return React.createElement(React.Fragment, null,
+            React.createElement('button', {
+              type: 'button',
+              className: 'si-sidebarTrigger',
+              'aria-label': t('nav'),
+              onClick: () => setOpen(true),
+            },
+              React.createElement('span', { className: 'si-sidebarTriggerIcon', 'aria-hidden': 'true' }, '⏱'),
+              React.createElement('span', null, t('nav'))
+            ),
+            open && React.createElement('div', { className: 'si-page', role: 'dialog', 'aria-modal': 'true' },
+              React.createElement('div', { className: 'si-pageHeader' },
+                React.createElement('h2', { className: 'si-pageTitle' }, t('title')),
+                React.createElement('button', { type: 'button', className: 'si-pageClose', 'aria-label': t('close'), onClick: () => setOpen(false) }, '✕')
+              ),
+              React.createElement('div', { className: 'si-pageBody' },
+                React.createElement(ScheduledItemsPanel, null)
+              )
+            )
+          )
+        }
+
         // Settings page.
         slots.inject('settings.section', () => slots.register(
           {
@@ -845,6 +890,16 @@ window.__ModuleLoader__.load({
           () => React.createElement(ScheduledItemsPanel, null)
         ))
 
+        // Sidebar footer action: full-page management overlay.
+        slots.inject('sidebar.footer.action', () => slots.register(
+          {
+            name: 'sidebar.footer.action',
+            id: '@weibaohui/dsh-tasks',
+            order: 30,
+            locale: LOCALE_NS,
+          },
+          () => React.createElement(ScheduledItemsPage, null)
+        ))
       },
     }
 
