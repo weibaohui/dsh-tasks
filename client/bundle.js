@@ -225,6 +225,7 @@ window.__ModuleLoader__.load({
       promptPlaceholder: '该事项执行时，让 agent 做什么？',
       enabledLabel: '启用',
       enabledHint: '停用的事项保留数据，但不会定时触发。',
+      disabledTag: '已停用',
       invalidForm: '标题、提示词和 cron 定时器都是必填项。',
       deleteConfirm: '确定删除这个定时事项？',
       close: '关闭',
@@ -293,6 +294,7 @@ window.__ModuleLoader__.load({
       promptPlaceholder: 'What should the agent do when this task runs?',
       enabledLabel: 'Enabled',
       enabledHint: 'Disabled tasks keep their data but never run on schedule.',
+      disabledTag: 'Disabled',
       invalidForm: 'Title, prompt, and cron schedule are required.',
       deleteConfirm: 'Delete this scheduled task?',
       close: 'Close',
@@ -696,7 +698,7 @@ window.__ModuleLoader__.load({
             if (item.workspaceId !== undefined) {
               parts.push(`${t('workspace')}: ${workspaceTitle(item.workspaceId)}`)
             }
-            if (!item.enabled) parts.push(`${t('enabledLabel')}: ✕`)
+            if (!item.enabled) parts.push(t('disabledTag'))
             parts.push(`${t('lastRun')}: ${lastRunText(t, item)}`)
             return parts.join(' · ')
           }
