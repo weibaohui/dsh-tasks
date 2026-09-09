@@ -283,17 +283,18 @@ function lastRunText(t, item) {
 
 module.exports = {
   name: '@weibaohui/dsh-tasks',
-  // Only `slots` is a resolvable service in the static bundle environment;
-  // `locale` is resolved dynamically below so the plugin never waits on a
-  // service name the web module loader does not serve.
-  inject: ['slots'],
+  // `locale` must be declared: the host provides it from a client plugin that
+  // activates after this one, so a bare ctx.get('locale') at apply time misses
+  // it and every string renders as its raw key (observed on dsh 0.1.2-rc.1).
+  // The runtime guard keeps the failure mode "raw keys", never a boot failure.
+  inject: ['slots', 'locale'],
 
   apply(ctx) {
     const slots = ctx.get('slots')
     if (slots === undefined) return
     const locale = ctx.get('locale')
     const t = locale ? locale.bind(LOCALE_NS) : (key) => key
-    if (locale) {
+    if (locale && typeof locale.register === 'function') {
       ctx.effect(() => locale.register(LOCALE_NS, LOCALE_DICT))
     }
 
