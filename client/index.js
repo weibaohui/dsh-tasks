@@ -478,9 +478,12 @@ module.exports = {
      * The management surface. Component-local state, zero renderer-bound
      * props hooks: everything (list, form, workspace options, actions) is
      * reached through the apply closure, so the bundle renders in any client
-     * runtime that serves `slots`.
+     * runtime that serves `slots`. The one renderer-bound prop is
+     * `closeSettings` — the settings.section slot owner hands every section
+     * its `close` callback; the panel uses it to dismiss the settings window
+     * after jumping to a run's conversation (absent on other hosts: no-op).
      */
-    function ScheduledItemsPanel() {
+    function ScheduledItemsPanel({ closeSettings }) {
       const [items, setItems] = React.useState([])
       const [loading, setLoading] = React.useState(false)
       const [error, setError] = React.useState(null)
@@ -563,11 +566,16 @@ module.exports = {
       }))
 
       // 打开某次执行对应的会话：open() 尽力而为（落地选择后可能 reject），
-      // 服务缺席时按钮根本不渲染。
+      // 服务缺席时按钮根本不渲染。打开成功后顺手关掉设置窗口——本面板是
+      // settings.section slot，宿主渲染时会在 slot props 里下发 close
+      // （dsh-client-ui-settings-general 同款，官方 agent-preset section 也这么用），
+      // 不关的话用户还停在设置页，得再按一次 Esc 才能看到切过去的会话。
       const canOpenSession = !!(sessionsApi && typeof sessionsApi.open === 'function')
       const openRunSession = (sessionId) => {
         try {
-          sessionsApi.open(sessionId)
+          const result = sessionsApi.open(sessionId)
+          if (result && typeof result.catch === 'function') result.catch(() => {})
+          if (typeof closeSettings === 'function') closeSettings()
         } catch {}
       }
       const workspaceTitle = (id) => {
@@ -725,7 +733,9 @@ module.exports = {
       )
     }
 
-    // Settings page.
+    // Settings page. The slot render callback receives the owner props the
+    // settings shell hands every section — including `close` — and forwards
+    // it so the panel can dismiss the window after opening a conversation.
     slots.inject('settings.section', () => slots.register(
       {
         name: 'settings.section',
@@ -734,7 +744,9 @@ module.exports = {
         label: () => t('nav'),
         locale: LOCALE_NS,
       },
-      () => React.createElement(ScheduledItemsPanel, null)
+      (slotProps) => React.createElement(ScheduledItemsPanel, {
+        closeSettings: slotProps && typeof slotProps.close === 'function' ? slotProps.close : undefined,
+      })
     ))
   },
 }
