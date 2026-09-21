@@ -43,6 +43,7 @@ const ZH = {
       runHistory: '执行记录',
       runOk: '成功',
       runFail: '失败',
+      openSession: '打开对话',
       cronLabel: 'cron 定时器',
       cronHint: '五段 croner 表达式（分 时 日 月 周），例如 "0 9 * * *" 表示每天 09:00。',
       cronPresets: '快捷模板',
@@ -110,6 +111,7 @@ const EN = {
   runHistory: 'Run history',
   runOk: 'OK',
   runFail: 'Failed',
+  openSession: 'Open chat',
   cronLabel: 'Cron schedule',
   cronHint: 'Five-field cron expression (minute hour day month weekday), e.g. "0 9 * * *" runs daily at 09:00.',
   cronPresets: 'Quick presets',
@@ -160,6 +162,11 @@ const EN = {
 const LOCALE_DICT = { zh: ZH, en: EN }
 
 const API = '/dsh-tasks/api'
+
+// Host sessions service for 打开对话, captured through dynamic ctx.inject
+// (dsh-sync / skills-management precedent: listing `sessions` in the static
+// inject array stalls activation). Absence degrades the button to hidden.
+let sessionsApi = null
 
 const styles = {
   _head: null,
@@ -214,7 +221,8 @@ styles.insert(`
     .si-runTime{color:var(--dsw-alias-label-secondary)}
     .si-runOk{color:var(--dsw-alias-label-secondary)}
     .si-runFail{color:var(--dsw-alias-state-error-primary);word-break:break-word}
-    .si-runSession{color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary));font-size:11px}
+    .si-runSession{padding:0;border:none;background:transparent;color:var(--dsw-alias-brand-primary);font-size:11px;cursor:pointer}
+    .si-runSession:hover{text-decoration:underline}
 
     /* Cron picker: preset chips, frequency segment, per-mode fields, summary. */
     .si-cron{display:flex;flex-direction:column;gap:9px;width:100%}
@@ -299,6 +307,17 @@ module.exports = {
     if (locale && typeof locale.register === 'function') {
       ctx.effect(() => locale.register(LOCALE_NS, LOCALE_DICT))
     }
+
+    // 「打开对话」：动态 inject 捕获宿主 sessions 服务（dsh-sync /
+    // skills-management 同款）。服务缺席时按钮整体隐藏，不影响其余功能。
+    try {
+      if (typeof ctx.inject === 'function') {
+        ctx.inject(['sessions'], (scope) => {
+          const svc = scope && scope.sessions
+          if (svc && typeof svc.open === 'function') sessionsApi = svc
+        })
+      }
+    } catch {}
 
         const emptyForm = () => ({ editingId: null, title: '', prompt: '', cron: '', enabled: true })
 
@@ -542,6 +561,15 @@ module.exports = {
         id: workspace.id,
         title: workspace.title,
       }))
+
+      // 打开某次执行对应的会话：open() 尽力而为（落地选择后可能 reject），
+      // 服务缺席时按钮根本不渲染。
+      const canOpenSession = !!(sessionsApi && typeof sessionsApi.open === 'function')
+      const openRunSession = (sessionId) => {
+        try {
+          sessionsApi.open(sessionId)
+        } catch {}
+      }
       const workspaceTitle = (id) => {
         const option = workspaceOptions.find((o) => o.id === id)
         return option ? option.title : id
@@ -584,7 +612,13 @@ module.exports = {
                             React.createElement('span', { className: 'si-runTime' }, new Date(run.at).toLocaleString()),
                             run.ok
                               ? React.createElement('span', { className: 'si-runOk' }, t('runOk'))
-                              : React.createElement('span', { className: 'si-runFail' }, `${t('runFail')}: ${run.error || ''}`)
+                              : React.createElement('span', { className: 'si-runFail' }, `${t('runFail')}: ${run.error || ''}`),
+                            run.sessionId && canOpenSession && React.createElement('button', {
+                              type: 'button',
+                              className: 'si-runSession',
+                              title: run.sessionId,
+                              onClick: () => openRunSession(run.sessionId),
+                            }, t('openSession'))
                           )
                         )
                       )
