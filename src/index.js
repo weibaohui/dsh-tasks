@@ -39,6 +39,9 @@ const itemSchema = z.object({
   cron: z.string(),
   enabled: z.boolean(),
   workspaceId: z.string().optional(),
+  /** Optional per-item model route; both present or both absent. */
+  provider: z.string().optional(),
+  model: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
   lastRunAt: z.string().optional(),
@@ -72,6 +75,23 @@ function validateCron(expression) {
   }
 }
 
+/**
+ * Validate the optional per-item model route: `provider` and `model` are
+ * either both non-empty strings or both absent. Returns the normalized pair
+ * (or `undefined` when unset) so callers can spread it into a record.
+ */
+function normalizeModelSelection(input) {
+  // JSON bodies express "unset" as null; treat it the same as absent.
+  const provider = input.provider === null ? undefined : input.provider
+  const model = input.model === null ? undefined : input.model
+  if (provider === undefined && model === undefined) return undefined
+  if (typeof provider !== 'string' || provider.trim() === ''
+    || typeof model !== 'string' || model.trim() === '') {
+    throw new Error('provider and model must both be non-empty strings, or both be omitted')
+  }
+  return { provider: provider.trim(), model: model.trim() }
+}
+
 /** Short local timestamp (`MM-DD HH:mm`) used to distinguish repeated runs in the sidebar. */
 function runStamp(iso) {
   const d = new Date(iso)
@@ -97,6 +117,7 @@ function buildRecord(input) {
     throw new Error('input must provide title, prompt, cron, and enabled')
   }
   validateCron(input.cron)
+  const selection = normalizeModelSelection(input)
   const now = new Date().toISOString()
   const id = `item-${randomUUID()}`
   return {
@@ -106,6 +127,7 @@ function buildRecord(input) {
     cron: input.cron,
     enabled: input.enabled,
     ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
+    ...(selection === undefined ? {} : selection),
     createdAt: now,
     updatedAt: now,
     runs: [],
@@ -118,7 +140,7 @@ module.exports = {
 
   // Exposed for the offline test suite only (test/*.test.mjs); Cordis
   // ignores unknown export properties.
-  __test: { itemSchema, runSchema, domainSpec, validateCron, buildRecord, runStamp, withRun, MAX_RUNS },
+  __test: { itemSchema, runSchema, domainSpec, validateCron, buildRecord, runStamp, withRun, normalizeModelSelection, MAX_RUNS },
 
   /**
    * Mount the store, the croner schedule, and the HTTP API.
@@ -166,7 +188,11 @@ module.exports = {
       const startedAt = new Date().toISOString()
       try {
         const sessionId = `session-${randomUUID()}`
-        const selection = ctx.agentDefaultModel.currentSelection()
+        // A per-item model route wins; otherwise fall back to the deployment
+        // default selection, exactly like a session created without a model.
+        const selection = record.provider !== undefined && record.model !== undefined
+          ? { provider: record.provider, model: record.model }
+          : ctx.agentDefaultModel.currentSelection()
         const workspace = record.workspaceId === undefined
           ? undefined
           : ctx.workspaceRegistry.get(record.workspaceId)
@@ -258,20 +284,8 @@ module.exports = {
         || typeof input.cron !== 'string' || typeof input.enabled !== 'boolean') {
         throw new Error('input must provide title, prompt, cron, and enabled')
       }
-      validateCron(input.cron)
-      const now = new Date().toISOString()
-      const id = `item-${randomUUID()}`
-      const record = {
-        id,
-        title: input.title,
-        prompt: input.prompt,
-        cron: input.cron,
-        enabled: input.enabled,
-        ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
-        createdAt: now,
-        updatedAt: now,
-        runs: [],
-      }
+      const record = buildRecord(input)
+      const id = record.id
       await requireTable().put(id, record)
       rescheduleOne(id, record)
       return record
@@ -282,12 +296,28 @@ module.exports = {
       const current = requireTable().get(id)
       if (current === undefined) throw new Error(`scheduled item '${id}' not found`)
       if (patch.cron !== undefined && patch.cron !== current.cron) validateCron(patch.cron)
+      // Model route in a PATCH: `null` (either field) clears the per-item
+      // selection back to the deployment default; present strings replace it
+      // as a validated pair; absent fields keep the stored route.
+      const { provider: patchProvider, model: patchModel, ...rest } = patch
+      let modelFields = {}
+      if (patchProvider === null || patchModel === null) {
+        modelFields = { provider: undefined, model: undefined }
+      } else if (patchProvider !== undefined || patchModel !== undefined) {
+        modelFields = normalizeModelSelection({
+          provider: patchProvider !== undefined ? patchProvider : current.provider,
+          model: patchModel !== undefined ? patchModel : current.model,
+        })
+      }
       const next = {
         ...current,
-        ...patch,
+        ...rest,
+        ...modelFields,
         id: current.id,
         updatedAt: new Date().toISOString(),
       }
+      if (next.provider === undefined) delete next.provider
+      if (next.model === undefined) delete next.model
       await requireTable().put(id, next)
       rescheduleOne(id, next)
       return next
@@ -352,6 +382,38 @@ module.exports = {
             } catch (error) {
               sendJson(res, 400, { error: String((error && error.message) || error) })
             }
+            return
+          }
+          if (req.method === 'GET' && apiPath.endsWith('/dsh-tasks/api/models')) {
+            // Model options for the client form: every routable provider with
+            // its models, plus the current deployment default so the client
+            // can label the fallback option. Provider failures are isolated —
+            // a provider that cannot list models is simply skipped.
+            const llm = ctx.get('llm')
+            const defaultSelection = ctx.agentDefaultModel.currentSelection()
+            let groups = []
+            if (llm && typeof llm.listProviders === 'function') {
+              const providers = llm.listProviders()
+              groups = (await Promise.all(providers.map(async (provider) => {
+                try {
+                  const models = await llm.listModels(provider.id)
+                  if (models.length === 0) return undefined
+                  return {
+                    id: provider.id,
+                    name: provider.name,
+                    models: models.map((model) => ({ id: model.id, name: model.name })),
+                  }
+                } catch {
+                  // Skip providers whose model listing fails; the form still
+                  // offers the remaining providers and the default option.
+                  return undefined
+                }
+              }))).filter((group) => group !== undefined)
+            }
+            sendJson(res, 200, {
+              default: { provider: defaultSelection.provider, model: defaultSelection.model },
+              groups,
+            })
             return
           }
           if (req.method === 'GET' && apiPath.endsWith('/dsh-tasks/api/workspaces')) {

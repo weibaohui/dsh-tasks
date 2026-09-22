@@ -9,7 +9,7 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const { __test } = require('../src/index.js')
 
-const { itemSchema, domainSpec, validateCron, buildRecord, withRun, runStamp, MAX_RUNS } = __test
+const { itemSchema, domainSpec, validateCron, buildRecord, withRun, runStamp, normalizeModelSelection, MAX_RUNS } = __test
 
 test('item schema accepts a complete record', () => {
   const record = {
@@ -91,6 +91,62 @@ test('buildRecord carries an optional workspaceId', () => {
     title: 'T', prompt: 'P', cron: '0 9 * * *', enabled: true, workspaceId: 'ws-9',
   })
   assert.equal(record.workspaceId, 'ws-9')
+})
+
+test('item schema accepts an optional per-item model route', () => {
+  const record = {
+    ...buildRecord({ title: 'T', prompt: 'P', cron: '0 9 * * *', enabled: true }),
+    provider: 'deepseek-official',
+    model: 'deepseek-flash',
+  }
+  const parsed = itemSchema.safeParse(record)
+  assert.equal(parsed.success, true)
+  assert.equal(parsed.data.provider, 'deepseek-official')
+  assert.equal(parsed.data.model, 'deepseek-flash')
+})
+
+test('buildRecord carries an optional model route', () => {
+  const record = buildRecord({
+    title: 'T', prompt: 'P', cron: '0 9 * * *', enabled: true,
+    provider: 'deepseek-official', model: 'deepseek-flash',
+  })
+  assert.equal(record.provider, 'deepseek-official')
+  assert.equal(record.model, 'deepseek-flash')
+})
+
+test('buildRecord omits the model route when not provided', () => {
+  const record = buildRecord({ title: 'T', prompt: 'P', cron: '0 9 * * *', enabled: true })
+  assert.equal('provider' in record, false)
+  assert.equal('model' in record, false)
+})
+
+test('buildRecord rejects a provider without a model (and vice versa)', () => {
+  assert.throws(
+    () => buildRecord({ title: 'T', prompt: 'P', cron: '0 9 * * *', enabled: true, provider: 'p' }),
+    /provider and model must both/,
+  )
+  assert.throws(
+    () => buildRecord({ title: 'T', prompt: 'P', cron: '0 9 * * *', enabled: true, model: 'm' }),
+    /provider and model must both/,
+  )
+})
+
+test('normalizeModelSelection trims a valid pair', () => {
+  assert.deepEqual(
+    normalizeModelSelection({ provider: ' p ', model: ' m ' }),
+    { provider: 'p', model: 'm' },
+  )
+})
+
+test('normalizeModelSelection treats null and absent as unset', () => {
+  assert.equal(normalizeModelSelection({}), undefined)
+  assert.equal(normalizeModelSelection({ provider: null, model: null }), undefined)
+})
+
+test('normalizeModelSelection rejects empty strings and half pairs', () => {
+  assert.throws(() => normalizeModelSelection({ provider: '', model: 'm' }), /provider and model must both/)
+  assert.throws(() => normalizeModelSelection({ provider: 'p', model: '  ' }), /provider and model must both/)
+  assert.throws(() => normalizeModelSelection({ provider: 'p' }), /provider and model must both/)
 })
 
 test('buildRecord rejects missing required fields', () => {

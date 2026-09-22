@@ -234,6 +234,10 @@ window.__ModuleLoader__.load({
       workspaceLabel: '工作区',
       workspaceNone: '不绑定工作区（默认目录）',
       workspaceHint: '执行时会在此工作区下新建会话，并显示在工作区分组中。',
+      model: '模型',
+      modelLabel: '模型',
+      modelDefault: '跟随默认模型（当前：{m}）',
+      modelHint: '该事项执行时新会话使用的模型；不选则跟随全局默认模型。',
     }
 
     const EN = {
@@ -304,6 +308,10 @@ window.__ModuleLoader__.load({
       workspaceLabel: 'Workspace',
       workspaceNone: 'None (default directory)',
       workspaceHint: 'Each run starts a new session in this workspace; sessions appear grouped under it in the sidebar.',
+      model: 'Model',
+      modelLabel: 'Model',
+      modelDefault: 'Follow default model (currently: {m})',
+      modelHint: 'The model used by the fresh session when this task runs; leave unset to follow the global default.',
     }
 
     const LOCALE_DICT = { zh: ZH, en: EN }
@@ -639,6 +647,7 @@ window.__ModuleLoader__.load({
               const [runningId, setRunningId] = React.useState(null)
               const [historyId, setHistoryId] = React.useState(null)
               const [workspaces, setWorkspaces] = React.useState([])
+              const [modelCatalog, setModelCatalog] = React.useState(null)
 
           const load = async () => {
             setLoading(true)
@@ -659,6 +668,12 @@ window.__ModuleLoader__.load({
               .then((response) => readJson(response))
               .then((payload) => { setWorkspaces(payload.workspaces || []) })
               .catch(() => {})
+            // Model options are optional too; without them the form simply
+            // hides the model select and every task follows the default model.
+            fetch(`${API}/models`)
+              .then((response) => readJson(response))
+              .then((payload) => { setModelCatalog(payload) })
+              .catch(() => {})
           }, [])
 
           const saveForm = async () => {
@@ -673,9 +688,25 @@ window.__ModuleLoader__.load({
                 enabled: form.enabled,
                 ...(form.workspaceId === undefined ? {} : { workspaceId: form.workspaceId }),
               }
+              const hasModel = form.provider !== undefined && form.model !== undefined
               const response = form.editingId === null
-                ? await fetch(API, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
-                : await fetch(API, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: form.editingId, ...payload }) })
+                ? await fetch(API, {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ ...payload, ...(hasModel ? { provider: form.provider, model: form.model } : {}) }),
+                })
+                // PATCH always carries the model fields: the pair when one is
+                // selected, or explicit nulls to clear a previously stored route.
+                : await fetch(API, {
+                  method: 'PATCH',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({
+                    id: form.editingId,
+                    ...payload,
+                    provider: hasModel ? form.provider : null,
+                    model: hasModel ? form.model : null,
+                  }),
+                })
               await readJson(response)
               setForm(null)
               await load()
@@ -729,10 +760,19 @@ window.__ModuleLoader__.load({
             const option = workspaceOptions.find((o) => o.id === id)
             return option ? option.title : id
           }
+          const modelName = (provider, model) => {
+            const groups = (modelCatalog && modelCatalog.groups) || []
+            const group = groups.find((g) => g.id === provider)
+            const entry = group && group.models.find((m) => m.id === model)
+            return entry ? entry.name : `${provider}/${model}`
+          }
           const rowMeta = (item) => {
             const parts = []
             if (item.workspaceId !== undefined) {
               parts.push(`${t('workspace')}: ${workspaceTitle(item.workspaceId)}`)
+            }
+            if (item.provider !== undefined && item.model !== undefined) {
+              parts.push(`${t('model')}: ${modelName(item.provider, item.model)}`)
             }
             if (!item.enabled) parts.push(t('disabledTag'))
             parts.push(`${t('lastRun')}: ${lastRunText(t, item)}`)
@@ -796,6 +836,9 @@ window.__ModuleLoader__.load({
                         cron: item.cron,
                         enabled: item.enabled,
                         ...(item.workspaceId === undefined ? {} : { workspaceId: item.workspaceId }),
+                        ...(item.provider === undefined || item.model === undefined
+                          ? {}
+                          : { provider: item.provider, model: item.model }),
                       }),
                     }, t('editItem')),
                     React.createElement('button', {
@@ -861,6 +904,49 @@ window.__ModuleLoader__.load({
                       React.createElement('option', { key: option.id, value: option.id }, option.title))
                   ),
                   React.createElement('small', { className: 'si-hint' }, t('workspaceHint'))
+                ),
+                modelCatalog && modelCatalog.groups && modelCatalog.groups.length > 0 && React.createElement('label', { className: 'si-field' },
+                  React.createElement('span', null, t('modelLabel')),
+                  React.createElement('select', {
+                    // Option values encode the route pair as JSON so ids may
+                    // contain any separator character; '' means "follow default".
+                    value: form.provider !== undefined && form.model !== undefined
+                      ? JSON.stringify([form.provider, form.model])
+                      : '',
+                    disabled,
+                    onChange: (e) => {
+                      if (e.target.value === '') {
+                        const next = { ...form }
+                        delete next.provider
+                        delete next.model
+                        setForm(next)
+                      } else {
+                        const [provider, model] = JSON.parse(e.target.value)
+                        setForm({ ...form, provider, model })
+                      }
+                    },
+                  },
+                    React.createElement('option', { value: '' },
+                      t('modelDefault').replace('{m}', modelCatalog.default
+                        ? modelName(modelCatalog.default.provider, modelCatalog.default.model)
+                        : '')),
+                    modelCatalog.groups.map((group) =>
+                      React.createElement('optgroup', { key: group.id, label: group.name },
+                        group.models.map((model) =>
+                          React.createElement('option', {
+                            key: model.id,
+                            value: JSON.stringify([group.id, model.id]),
+                          }, model.name)))),
+                    // A stored route that vanished from the catalog still renders
+                    // as a selectable (labeled) option instead of silently
+                    // snapping the select back to the default entry.
+                    form.provider !== undefined && form.model !== undefined
+                      && !((modelCatalog.groups.find((g) => g.id === form.provider) || { models: [] }).models.some((m) => m.id === form.model))
+                      && React.createElement('option', {
+                        value: JSON.stringify([form.provider, form.model]),
+                      }, `${form.provider}/${form.model}`)
+                  ),
+                  React.createElement('small', { className: 'si-hint' }, t('modelHint'))
                 ),
                 React.createElement('label', { className: 'si-checkbox' },
                   React.createElement('input', {
