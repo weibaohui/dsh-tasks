@@ -6,13 +6,16 @@
  * Durable cron-driven prompts. Each item carries a title, a prompt, and a
  * croner expression; an enabled item spawns a fresh agent session and
  * submits the prompt on schedule (or on demand). The store is durable
- * through the host `storageDomain` service (domain `scheduled_items`), the
+ * through the host `storageDomain` service (domain `dsh_tasks`), the
  * schedule runs on croner, and an HTTP API under `/dsh-tasks/api`
  * serves the management pages in the web client.
  *
- * Zero `@deepseek-ai/dsh-*` imports: every harness capability is reached
- * through `ctx.*` runtime services (`storageDomain`, `workspaceRegistry`,
- * `agents`, `agentDefaultModel`, `webServer`). The only runtime
+ * Runs push notifications through other plugins' delivery services
+ * (`ctx.get(service)` — e.g. `dshIm` from @xmanrui/dsh-im): the spawned
+ * session's first `turn/end` settles the run, and the result goes to every
+ * channel configured in the settings UI. Providers are soft dependencies —
+ * absent services disable notification delivery without blocking the plugin.
+ * The only runtime
  * dependencies are plain npm packages (croner, zod).
  */
 
@@ -49,11 +52,119 @@ const itemSchema = z.object({
   runs: z.array(runSchema).optional(),
 })
 
-/** The dsh-tasks domain: one `items` table keyed by item id. */
+// ── Notification settings ─────────────────────────────────────────────────────
+// Delivery providers are OTHER plugins (e.g. @xmanrui/dsh-im) that expose a
+// cordis service shaped like `{ send(botId, targetId, text), listBots(),
+// listTargets(botId) }`. They are reached through a soft `ctx.get(service)`
+// lookup — never through `inject`, which would turn dsh-im into a hard
+// dependency and keep this plugin from activating without it.
+
+/** cordis service names probed by the provider discovery endpoint. */
+const NOTIFY_SERVICE_CANDIDATES = ['dshIm']
+
+/** Stable key of the single notify-settings record in the `notify` table. */
+const NOTIFY_CONFIG_KEY = 'config'
+
+/** One configured push target: a delivery service plus its routing ids. */
+const notifyChannelSchema = z.object({
+  id: z.string().min(1),
+  service: z.string().min(1),
+  botId: z.string().min(1),
+  targetId: z.string().min(1),
+  label: z.string().optional(),
+})
+
+/** Validated shape of the stored notify settings record. */
+const notifyConfigSchema = z.object({
+  enabled: z.boolean(),
+  onStart: z.boolean(),
+  onComplete: z.boolean(),
+  onError: z.boolean(),
+  channels: z.array(notifyChannelSchema),
+})
+
+/**
+ * Coerce arbitrary (client-supplied or stored) input into a valid notify
+ * config: missing booleans fall back to their defaults, channels lacking an
+ * id get one generated, and invalid channel fields throw a readable error.
+ */
+function normalizeNotifyConfig(input) {
+  const raw = input && typeof input === 'object' ? input : {}
+  const channels = Array.isArray(raw.channels) ? raw.channels : []
+  return {
+    enabled: raw.enabled === true,
+    onStart: raw.onStart === true,
+    onComplete: raw.onComplete !== false,
+    onError: raw.onError !== false,
+    channels: channels.map((channel) => notifyChannelSchema.parse({
+      id: typeof channel.id === 'string' && channel.id !== '' ? channel.id : `chan-${randomUUID()}`,
+      service: channel.service,
+      botId: channel.botId,
+      targetId: channel.targetId,
+      ...(typeof channel.label === 'string' && channel.label !== '' ? { label: channel.label } : {}),
+    })),
+  }
+}
+
+/** Extract the reason kind from a `turn/end` event payload (tolerates bare strings). */
+function turnEndKind(reason) {
+  if (typeof reason === 'string') return reason
+  if (reason && typeof reason === 'object' && typeof reason.kind === 'string') return reason.kind
+  return undefined
+}
+
+/** Map a turn-end kind onto a notification kind; `undefined` means stay silent. */
+function classifyTurnEnd(kind) {
+  if (kind === 'completed' || kind === 'max-tokens') return 'complete'
+  if (kind === 'error') return 'error'
+  return undefined
+}
+
+/** Pull a human-readable message out of a `turn/end` error reason. */
+function errorSummaryFrom(reason) {
+  const failure = reason && typeof reason === 'object' ? (reason.error || reason.failure) : undefined
+  if (failure === undefined || failure === null) return undefined
+  const text = typeof failure === 'string' ? failure : (typeof failure.message === 'string' ? failure.message : String(failure))
+  return text.slice(0, 200)
+}
+
+/** Format a millisecond duration as a compact `42s` / `3m12s` / `1h4m` string. */
+function formatDuration(ms) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return ''
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) {
+    const rest = seconds % 60
+    return rest ? `${minutes}m${rest}s` : `${minutes}m`
+  }
+  return `${Math.floor(minutes / 60)}h${minutes % 60}m`
+}
+
+/** Compose the push text for one notification kind. */
+function formatNotifyText(kind, info) {
+  const title = info && typeof info.title === 'string' && info.title !== '' ? info.title : '未命名任务'
+  const duration = formatDuration(info && info.durationMs)
+  const suffix = duration ? ` · 耗时 ${duration}` : ''
+  if (kind === 'start') return `▶️ 定时任务「${title}」已开始`
+  if (kind === 'error') {
+    const detail = info && info.error ? `：${info.error}` : ''
+    return `❌ 定时任务「${title}」失败${detail}${suffix}`
+  }
+  return `✅ 定时任务「${title}」已完成${suffix}`
+}
+
+/** The dsh-tasks domain: durable `items` plus the notify settings record.
+ *  Version stays 1 on purpose — the storage backend has no migration path
+ *  (a version change rejects the open outright), and adding an empty table
+ *  needs none: existing items records validate against the unchanged schema. */
 const domainSpec = {
   name: 'dsh_tasks',
   version: 1,
-  tables: { items: { valueSchema: itemSchema } },
+  tables: {
+    items: { valueSchema: itemSchema },
+    notify: { valueSchema: notifyConfigSchema },
+  },
 }
 
 /** Maximum request body the item API accepts (create/update payloads). */
@@ -140,7 +251,25 @@ module.exports = {
 
   // Exposed for the offline test suite only (test/*.test.mjs); Cordis
   // ignores unknown export properties.
-  __test: { itemSchema, runSchema, domainSpec, validateCron, buildRecord, runStamp, withRun, normalizeModelSelection, MAX_RUNS },
+  __test: {
+    itemSchema,
+    runSchema,
+    domainSpec,
+    validateCron,
+    buildRecord,
+    runStamp,
+    withRun,
+    normalizeModelSelection,
+    normalizeNotifyConfig,
+    turnEndKind,
+    classifyTurnEnd,
+    errorSummaryFrom,
+    formatDuration,
+    formatNotifyText,
+    NOTIFY_CONFIG_KEY,
+    NOTIFY_SERVICE_CANDIDATES,
+    MAX_RUNS,
+  },
 
   /**
    * Mount the store, the croner schedule, and the HTTP API.
@@ -153,7 +282,13 @@ module.exports = {
     const defaultCwd = config.cwd || process.cwd()
 
     let table
+    let notifyTable
+    let notifyConfig = normalizeNotifyConfig()
     const jobs = new Map()
+    // In-memory run tracking for completion notifications, keyed by the
+    // sessionId this plugin spawned. A host restart drops pending entries —
+    // the run still happened, it just cannot be notified about afterwards.
+    const trackedRuns = new Map()
 
     const requireTable = () => {
       if (!table) throw new Error('scheduled items are not started yet')
@@ -245,9 +380,18 @@ module.exports = {
           source: { kind: 'plugin', plugin: 'dsh-tasks' },
         }
         handle.agent.followup(message)
+        trackedRuns.set(sessionId, { itemId: record.id, title: record.title, startedAt })
+        void dispatchNotify('start', { title: record.title, startedAt })
         return withRun(record, { at: startedAt, ok: true, sessionId })
       } catch (error) {
-        return withRun(record, { at: startedAt, ok: false, error: String((error && error.message) || error) })
+        const message = String((error && error.message) || error)
+        void dispatchNotify('error', {
+          title: record.title,
+          startedAt,
+          durationMs: Date.now() - new Date(startedAt).getTime(),
+          error: message,
+        })
+        return withRun(record, { at: startedAt, ok: false, error: message })
       }
     }
 
@@ -344,6 +488,99 @@ module.exports = {
       return updated
     }
 
+    // ── notifications ────────────────────────────────────────────────────────
+    const warnLog = (message) => {
+      try {
+        const logger = ctx.logger
+        if (typeof logger === 'function') { logger('dsh-tasks').warn(message); return }
+        if (logger && typeof logger.warn === 'function') { logger.warn(message) }
+      } catch {}
+    }
+
+    /** Normalize one entry of `listBots()` output; `undefined` when unusable. */
+    function normalizeBot(bot) {
+      if (!bot || typeof bot !== 'object') return undefined
+      const botId = typeof bot.botId === 'string' ? bot.botId : (typeof bot.id === 'string' ? bot.id : undefined)
+      if (botId === undefined) return undefined
+      return { botId, ...(typeof bot.channel === 'string' ? { channel: bot.channel } : {}) }
+    }
+
+    /** Normalize one entry of `listTargets(botId)` output; `undefined` when unusable. */
+    function normalizeTarget(target) {
+      if (!target || typeof target !== 'object') return undefined
+      const targetId = typeof target.targetId === 'string' ? target.targetId : (typeof target.id === 'string' ? target.id : undefined)
+      if (targetId === undefined) return undefined
+      return {
+        targetId,
+        ...(typeof target.name === 'string' && target.name !== '' ? { name: target.name } : {}),
+        ...(typeof target.kind === 'string' ? { kind: target.kind } : {}),
+      }
+    }
+
+    /**
+     * Probe every candidate delivery service (plus any service already
+     * referenced by a configured channel) and describe its bots and saved
+     * targets for the settings UI. A provider missing, inactive, or failing
+     * to enumerate simply drops out — discovery is best-effort by design.
+     */
+    async function listProviders() {
+      const configured = new Set(notifyConfig.channels.map((channel) => channel.service))
+      const providers = []
+      for (const service of new Set([...NOTIFY_SERVICE_CANDIDATES, ...configured])) {
+        const svc = ctx.get(service)
+        if (!svc || typeof svc.send !== 'function') continue
+        const provider = { service, bots: [] }
+        try {
+          if (typeof svc.listBots === 'function') {
+            const bots = await svc.listBots()
+            for (const raw of Array.isArray(bots) ? bots : []) {
+              const bot = normalizeBot(raw)
+              if (bot === undefined) continue
+              const entry = { botId: bot.botId, ...(bot.channel !== undefined ? { channel: bot.channel } : {}), targets: [] }
+              try {
+                if (typeof svc.listTargets === 'function') {
+                  const targets = await svc.listTargets(bot.botId)
+                  entry.targets = (Array.isArray(targets) ? targets : []).map(normalizeTarget).filter((t) => t !== undefined)
+                }
+              } catch {}
+              provider.bots.push(entry)
+            }
+          }
+        } catch {}
+        providers.push(provider)
+      }
+      return providers
+    }
+
+    /** Push one notification to every configured channel (best-effort, allSettled). */
+    async function dispatchNotify(kind, info) {
+      try {
+        const config = notifyConfig
+        if (!config.enabled || config.channels.length === 0) return
+        const wanted = kind === 'start' ? config.onStart
+          : kind === 'complete' ? config.onComplete
+            : kind === 'error' ? config.onError
+              : false
+        if (!wanted) return
+        const text = formatNotifyText(kind, info)
+        const results = await Promise.allSettled(config.channels.map(async (channel) => {
+          const svc = ctx.get(channel.service)
+          if (!svc || typeof svc.send !== 'function') {
+            throw new Error(`delivery service '${channel.service}' is not available`)
+          }
+          await svc.send(channel.botId, channel.targetId, text)
+        }))
+        results.forEach((result, index) => {
+          if (result.status === 'rejected') {
+            const channel = config.channels[index]
+            warnLog(`dsh-tasks: notify '${kind}' via ${channel.service}/${channel.targetId} failed: ${String((result.reason && result.reason.message) || result.reason)}`)
+          }
+        })
+      } catch (error) {
+        warnLog(`dsh-tasks: dispatchNotify failed: ${String((error && error.message) || error)}`)
+      }
+    }
+
     // ── lifecycle: open the domain and reschedule every enabled item ─────────
     // The cleanup effect must be registered synchronously while the plugin's
     // cordis fiber is still active: calling ctx.effect() after an await (inside
@@ -357,8 +594,45 @@ module.exports = {
     }, 'dsh-tasks: domain close')
     void domainPromise.then((domain) => {
       table = domain.table('items')
+      notifyTable = domain.table('notify')
+      const stored = notifyTable.get(NOTIFY_CONFIG_KEY)
+      if (stored !== undefined) {
+        try {
+          notifyConfig = normalizeNotifyConfig(stored)
+        } catch (error) {
+          // A stored record that no longer validates keeps the defaults; the
+          // next save from the settings page overwrites it.
+          warnLog(`dsh-tasks: stored notify config ignored: ${String((error && error.message) || error)}`)
+        }
+      }
       rescheduleAll()
     })
+
+    // ── run completion tracking ──────────────────────────────────────────────
+    // A dsh-tasks run submits exactly one prompt, so the session's first
+    // `turn/end` settles it: completed/max-tokens notify success, error
+    // notifies failure, anything else (user abort) stays silent. The handler
+    // never throws — event dispatch must not take the host down.
+    ctx.effect(() => {
+      const dispose = ctx.on('session/event', (session, event) => {
+        try {
+          if (!event || event.type !== 'turn/end') return
+          const sessionId = session && session.id
+          if (typeof sessionId !== 'string' || !trackedRuns.has(sessionId)) return
+          const run = trackedRuns.get(sessionId)
+          trackedRuns.delete(sessionId)
+          const kind = classifyTurnEnd(turnEndKind(event.data && event.data.reason))
+          if (kind === undefined) return
+          void dispatchNotify(kind, {
+            title: run.title,
+            startedAt: run.startedAt,
+            durationMs: Date.now() - new Date(run.startedAt).getTime(),
+            error: kind === 'error' ? errorSummaryFrom(event.data && event.data.reason) : undefined,
+          })
+        } catch {}
+      })
+      return () => { try { dispose() } catch {} }
+    }, 'dsh-tasks: run completion tracking')
 
     // ── HTTP API under the registered prefix ─────────────────────────────────
     ctx.effect(() => ctx.webServer.register({
@@ -454,6 +728,20 @@ module.exports = {
             }
             await remove(body.id)
             sendJson(res, 200, { removed: true })
+            return
+          }
+          if (req.method === 'GET' && apiPath.endsWith('/dsh-tasks/api/notify')) {
+            // Settings plus a live provider probe so the client can render
+            // channel pickers; discovery failures degrade to fewer providers.
+            sendJson(res, 200, { config: notifyConfig, providers: await listProviders() })
+            return
+          }
+          if (req.method === 'PUT' && apiPath.endsWith('/dsh-tasks/api/notify')) {
+            const next = normalizeNotifyConfig(await readJsonBody(req))
+            if (notifyTable === undefined) throw new Error('notify settings are not ready yet')
+            await notifyTable.put(NOTIFY_CONFIG_KEY, next)
+            notifyConfig = next
+            sendJson(res, 200, { config: notifyConfig })
             return
           }
           if (req.method === 'POST' && apiPath.endsWith('/dsh-tasks/api/run')) {

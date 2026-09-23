@@ -238,6 +238,27 @@ window.__ModuleLoader__.load({
       modelLabel: '模型',
       modelDefault: '跟随默认模型（当前：{m}）',
       modelHint: '该事项执行时新会话使用的模型；不选则跟随全局默认模型。',
+      notify: '通知推送',
+      notifyHint: '把每次执行的结果推送到已接入的 IM 投递插件（如 dsh-im）绑定的聊天渠道。插件未安装或未连接时通知不可用。',
+      notifyEnabled: '启用通知推送',
+      notifyEventStart: '开始执行时',
+      notifyEventComplete: '执行完成时',
+      notifyEventError: '执行失败时',
+      notifyChannels: '推送渠道',
+      notifyChannelsEmpty: '尚未添加任何渠道。',
+      notifyNoProvider: '未检测到可用的 IM 投递插件（如 dsh-im）。请先安装并完成机器人配置，再刷新本页。',
+      notifyNoTargets: '该机器人还没有已保存的投递目标，请先在对应插件设置中保存。',
+      notifyAdd: '添加渠道',
+      notifyProviderLabel: '插件',
+      notifyBotLabel: '机器人',
+      notifyTargetLabel: '目标',
+      notifySelectProvider: '选择插件',
+      notifySelectBot: '选择机器人',
+      notifySelectTarget: '选择目标',
+      notifyRemove: '移除',
+      notifyUnavailable: '不可用',
+      notifySave: '保存通知设置',
+      notifySaved: '已保存 ✓',
     }
 
     const EN = {
@@ -312,6 +333,27 @@ window.__ModuleLoader__.load({
       modelLabel: 'Model',
       modelDefault: 'Follow default model (currently: {m})',
       modelHint: 'The model used by the fresh session when this task runs; leave unset to follow the global default.',
+      notify: 'Notifications',
+      notifyHint: 'Push each run\'s result to a chat channel bound in an installed IM delivery plugin (e.g. dsh-im). Unavailable while the plugin is missing or disconnected.',
+      notifyEnabled: 'Enable notifications',
+      notifyEventStart: 'On start',
+      notifyEventComplete: 'On completion',
+      notifyEventError: 'On failure',
+      notifyChannels: 'Channels',
+      notifyChannelsEmpty: 'No channels added yet.',
+      notifyNoProvider: 'No IM delivery provider detected (e.g. dsh-im). Install and configure one, then reload this page.',
+      notifyNoTargets: 'This bot has no saved delivery targets yet — save one in the provider plugin settings first.',
+      notifyAdd: 'Add channel',
+      notifyProviderLabel: 'Provider',
+      notifyBotLabel: 'Bot',
+      notifyTargetLabel: 'Target',
+      notifySelectProvider: 'Select provider',
+      notifySelectBot: 'Select bot',
+      notifySelectTarget: 'Select target',
+      notifyRemove: 'Remove',
+      notifyUnavailable: 'unavailable',
+      notifySave: 'Save notification settings',
+      notifySaved: 'Saved ✓',
     }
 
     const LOCALE_DICT = { zh: ZH, en: EN }
@@ -432,6 +474,13 @@ window.__ModuleLoader__.load({
     .si-hint{font-size:12px;color:var(--dsw-alias-label-secondary)}
     .si-checkbox{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dsw-alias-label-secondary)}
     .si-formActions{display:flex;gap:8px}
+    /* Notification settings block. */
+    .si-events{display:flex;flex-wrap:wrap;gap:14px}
+    .si-chanList{display:flex;flex-direction:column;gap:6px;width:100%}
+    .si-chan{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;background:var(--dsw-alias-bg-layer-1);font-size:12px;color:var(--dsw-alias-label-primary)}
+    .si-chanLabel{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .si-chanOff{color:var(--dsw-alias-state-error-primary);flex-shrink:0}
+    .si-btn-sm{font-size:12px;padding:2px 9px;border-radius:6px;flex-shrink:0}
     `)
 
     async function readJson(response) {
@@ -648,6 +697,11 @@ window.__ModuleLoader__.load({
               const [historyId, setHistoryId] = React.useState(null)
               const [workspaces, setWorkspaces] = React.useState([])
               const [modelCatalog, setModelCatalog] = React.useState(null)
+              const [notifyCfg, setNotifyCfg] = React.useState(null)
+              const [notifyProviders, setNotifyProviders] = React.useState([])
+              const [notifyPick, setNotifyPick] = React.useState({ service: '', botId: '', targetId: '' })
+              const [notifySaving, setNotifySaving] = React.useState(false)
+              const [notifySavedTick, setNotifySavedTick] = React.useState(false)
 
           const load = async () => {
             setLoading(true)
@@ -673,6 +727,15 @@ window.__ModuleLoader__.load({
             fetch(`${API}/models`)
               .then((response) => readJson(response))
               .then((payload) => { setModelCatalog(payload) })
+              .catch(() => {})
+            // Notification settings + live delivery-provider probe; absence of
+            // providers only disables the notification block, never the page.
+            fetch(`${API}/notify`)
+              .then((response) => readJson(response))
+              .then((payload) => {
+                setNotifyCfg(payload.config || null)
+                setNotifyProviders(payload.providers || [])
+              })
               .catch(() => {})
           }, [])
 
@@ -742,6 +805,53 @@ window.__ModuleLoader__.load({
             id: workspace.id,
             title: workspace.title,
           }))
+
+          // ── 通知推送设置 ──────────────────────────────────────────────────────
+          const saveNotify = async () => {
+            if (!notifyCfg || notifySaving) return
+            setNotifySaving(true)
+            try {
+              const payload = await readJson(await fetch(`${API}/notify`, {
+                method: 'PUT',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(notifyCfg),
+              }))
+              setNotifyCfg(payload.config)
+              setNotifyProviders(payload.providers || [])
+              setNotifySavedTick(true)
+              setTimeout(() => setNotifySavedTick(false), 1600)
+            } catch (err) {
+              setError(String((err && err.message) || err))
+            }
+            setNotifySaving(false)
+          }
+
+          const pickProvider = notifyProviders.find((p) => p.service === notifyPick.service)
+          const pickBots = pickProvider ? pickProvider.bots : []
+          const pickBot = pickBots.find((b) => b.botId === notifyPick.botId)
+          const pickTargets = pickBot ? pickBot.targets : []
+          const pickTarget = pickTargets.find((target) => target.targetId === notifyPick.targetId)
+          const pickComplete = !!(pickProvider && pickBot && pickTarget)
+          const pickDuplicate = pickComplete && notifyCfg !== null && notifyCfg.channels.some((ch) =>
+            ch.service === notifyPick.service && ch.botId === notifyPick.botId && ch.targetId === notifyPick.targetId)
+
+          const addChannel = () => {
+            if (!pickComplete || pickDuplicate) return
+            const botLabel = pickBot.channel || `${notifyPick.botId.slice(0, 10)}…`
+            const targetLabel = pickTarget.name || pickTarget.targetId
+            const id = `chan-${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`
+            setNotifyCfg({
+              ...notifyCfg,
+              channels: [...notifyCfg.channels, {
+                id,
+                service: notifyPick.service,
+                botId: notifyPick.botId,
+                targetId: pickTarget.targetId,
+                label: `${botLabel} · ${targetLabel}`,
+              }],
+            })
+            setNotifyPick({ service: '', botId: '', targetId: '' })
+          }
 
           // 打开某次执行对应的会话：open() 尽力而为（落地选择后可能 reject），
           // 服务缺席时按钮根本不渲染。打开成功后顺手关掉设置窗口——本面板是
@@ -962,7 +1072,110 @@ window.__ModuleLoader__.load({
                   React.createElement('button', { type: 'submit', className: 'si-btn si-btn-primary', disabled }, saving ? t('saving') : t('save')),
                   React.createElement('button', { type: 'button', className: 'si-btn', disabled, onClick: () => setForm(null) }, t('cancel'))
                 )
+              ),
+            notifyCfg !== null && React.createElement('div', { className: 'si-form' },
+              React.createElement('h3', { className: 'si-formTitle' }, t('notify')),
+              React.createElement('p', { className: 'si-hint' }, t('notifyHint')),
+              React.createElement('label', { className: 'si-checkbox' },
+                React.createElement('input', {
+                  type: 'checkbox',
+                  checked: notifyCfg.enabled,
+                  onChange: (e) => setNotifyCfg({ ...notifyCfg, enabled: e.target.checked }),
+                }),
+                React.createElement('span', null, t('notifyEnabled'))
+              ),
+              notifyCfg.enabled && React.createElement(React.Fragment, null,
+                React.createElement('div', { className: 'si-events' },
+                  [
+                    ['onStart', 'notifyEventStart'],
+                    ['onComplete', 'notifyEventComplete'],
+                    ['onError', 'notifyEventError'],
+                  ].map(([key, localeKey]) =>
+                    React.createElement('label', { key, className: 'si-checkbox' },
+                      React.createElement('input', {
+                        type: 'checkbox',
+                        checked: notifyCfg[key],
+                        onChange: (e) => setNotifyCfg({ ...notifyCfg, [key]: e.target.checked }),
+                      }),
+                      React.createElement('span', null, t(localeKey))
+                    )
+                  )
+                ),
+                React.createElement('div', { className: 'si-field' },
+                  React.createElement('span', null, t('notifyChannels')),
+                  notifyCfg.channels.length === 0
+                    ? React.createElement('span', { className: 'si-hint' }, t('notifyChannelsEmpty'))
+                    : React.createElement('div', { className: 'si-chanList' },
+                      notifyCfg.channels.map((channel) =>
+                        React.createElement('div', { key: channel.id, className: 'si-chan' },
+                          React.createElement('span', { className: 'si-chanLabel' },
+                            channel.label || `${channel.service} → ${channel.targetId}`,
+                            !notifyProviders.some((p) => p.service === channel.service)
+                              && React.createElement('span', { className: 'si-chanOff' }, `（${t('notifyUnavailable')}）`)
+                          ),
+                          React.createElement('button', {
+                            type: 'button',
+                            className: 'si-btn si-btn-sm',
+                            onClick: () => setNotifyCfg({
+                              ...notifyCfg,
+                              channels: notifyCfg.channels.filter((c) => c.id !== channel.id),
+                            }),
+                          }, t('notifyRemove'))
+                        )
+                      )
+                    )
+                ),
+                notifyProviders.length > 0
+                  ? React.createElement('div', { className: 'si-cronRow' },
+                    React.createElement('select', {
+                      'aria-label': t('notifyProviderLabel'),
+                      value: notifyPick.service,
+                      onChange: (e) => setNotifyPick({ service: e.target.value, botId: '', targetId: '' }),
+                    },
+                      React.createElement('option', { value: '' }, t('notifySelectProvider')),
+                      notifyProviders.map((provider) =>
+                        React.createElement('option', { key: provider.service, value: provider.service }, provider.service))
+                    ),
+                    notifyPick.service !== '' && React.createElement('select', {
+                      'aria-label': t('notifyBotLabel'),
+                      value: notifyPick.botId,
+                      onChange: (e) => setNotifyPick({ ...notifyPick, botId: e.target.value, targetId: '' }),
+                    },
+                      React.createElement('option', { value: '' }, t('notifySelectBot')),
+                      pickBots.map((bot) =>
+                        React.createElement('option', { key: bot.botId, value: bot.botId },
+                          bot.channel ? `[${bot.channel}] ${bot.botId.slice(0, 12)}…` : bot.botId))
+                    ),
+                    pickBot && React.createElement('select', {
+                      'aria-label': t('notifyTargetLabel'),
+                      value: notifyPick.targetId,
+                      onChange: (e) => setNotifyPick({ ...notifyPick, targetId: e.target.value }),
+                    },
+                      React.createElement('option', { value: '' }, t('notifySelectTarget')),
+                      pickTargets.length === 0
+                        ? React.createElement('option', { value: '__none__', disabled: true }, t('notifyNoTargets'))
+                        : pickTargets.map((target) =>
+                          React.createElement('option', { key: target.targetId, value: target.targetId },
+                            target.name || target.targetId))
+                    ),
+                    React.createElement('button', {
+                      type: 'button',
+                      className: 'si-btn',
+                      disabled: !pickComplete || pickDuplicate,
+                      onClick: addChannel,
+                    }, t('notifyAdd'))
+                  )
+                  : React.createElement('p', { className: 'si-hint' }, t('notifyNoProvider'))
+              ),
+              React.createElement('div', { className: 'si-formActions' },
+                React.createElement('button', {
+                  type: 'button',
+                  className: 'si-btn si-btn-primary',
+                  disabled: notifySaving,
+                  onClick: () => void saveNotify(),
+                }, notifySavedTick ? t('notifySaved') : t('notifySave'))
               )
+            )
           )
         }
 
