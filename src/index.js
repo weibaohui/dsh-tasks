@@ -65,6 +65,9 @@ const NOTIFY_SERVICE_CANDIDATES = ['dshIm']
 /** Stable key of the single notify-settings record in the `notify` table. */
 const NOTIFY_CONFIG_KEY = 'config'
 
+/** Maximum tail of the agent's final reply included in a completion push. */
+const MAX_RESULT_CHARS = 1000
+
 /** One configured push target: a delivery service plus its routing ids. */
 const notifyChannelSchema = z.object({
   id: z.string().min(1),
@@ -80,6 +83,7 @@ const notifyConfigSchema = z.object({
   onStart: z.boolean(),
   onComplete: z.boolean(),
   onError: z.boolean(),
+  includeResult: z.boolean(),
   channels: z.array(notifyChannelSchema),
 })
 
@@ -96,6 +100,7 @@ function normalizeNotifyConfig(input) {
     onStart: raw.onStart === true,
     onComplete: raw.onComplete !== false,
     onError: raw.onError !== false,
+    includeResult: raw.includeResult === true,
     channels: channels.map((channel) => notifyChannelSchema.parse({
       id: typeof channel.id === 'string' && channel.id !== '' ? channel.id : `chan-${randomUUID()}`,
       service: channel.service,
@@ -128,6 +133,58 @@ function errorSummaryFrom(reason) {
   return text.slice(0, 200)
 }
 
+/** Extract the plain text from one message's content blocks (text blocks only). */
+function messageText(content) {
+  if (!Array.isArray(content)) return ''
+  const parts = []
+  for (const block of content) {
+    if (block && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string') {
+      parts.push(block.text)
+    }
+  }
+  return parts.join('\n').trim()
+}
+
+/**
+ * The final assistant reply from a session event log: scan backwards for the
+ * last `assistant/message` entry (tool-call turns write their reply after the
+ * tools finish, so the last one is the conclusion). Missing entries (reasoning
+ * blocks etc.) yield ''.
+ */
+function lastAssistantText(events) {
+  if (!Array.isArray(events)) return ''
+  for (let i = events.length - 1; i >= 0; i--) {
+    const entry = events[i]
+    if (entry && entry.type === 'assistant/message') {
+      const message = entry.data && entry.data.message
+      const text = messageText(message && message.content)
+      if (text) return text
+    }
+  }
+  return ''
+}
+
+/**
+ * Defensive read of a live session's event log. `snapshotEvents()` is the
+ * sanctioned entry (works while events spill to disk); bare `session.events`
+ * is the fallback and may be absent.
+ */
+function sessionEventsOf(session) {
+  if (!session) return undefined
+  try {
+    const events = typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : session.events
+    if (Array.isArray(events)) return events
+  } catch {}
+  return undefined
+}
+
+/** The tail of `text`, capped at `max` chars with a leading ellipsis when trimmed. */
+function takeTail(text, max) {
+  const trimmed = typeof text === 'string' ? text.trim() : ''
+  if (!trimmed || typeof max !== 'number' || !Number.isFinite(max) || max <= 0) return ''
+  return trimmed.length > max ? `…${trimmed.slice(-max)}` : trimmed
+}
+
 /** Format a millisecond duration as a compact `42s` / `3m12s` / `1h4m` string. */
 function formatDuration(ms) {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return ''
@@ -151,19 +208,36 @@ function formatNotifyText(kind, info) {
     const detail = info && info.error ? `：${info.error}` : ''
     return `❌ 定时任务「${title}」失败${detail}${suffix}`
   }
-  return `✅ 定时任务「${title}」已完成${suffix}`
+  const result = takeTail(info && info.resultText, MAX_RESULT_CHARS)
+  return `✅ 定时任务「${title}」已完成${suffix}` + (result ? `\n结论：${result}` : '')
 }
 
 /** The dsh-tasks domain: durable `items` plus the notify settings record.
  *  Version stays 1 on purpose — the storage backend has no migration path
  *  (a version change rejects the open outright), and adding an empty table
- *  needs none: existing items records validate against the unchanged schema. */
+ *  needs none: existing items records validate against the unchanged schema.
+ *
+ *  The notify table's stored-record schema is deliberately LOOSE: open
+ *  validates every stored record against it, so a strict schema would turn
+ *  any future field addition into a boot-killing change for deployments
+ *  holding records written by older versions (adding a required
+ *  `includeResult` did exactly that on the live host). Strict shaping and
+ *  defaults happen in normalizeNotifyConfig at read time instead. */
+const storedNotifyRecordSchema = z.looseObject({
+  enabled: z.boolean().optional(),
+  onStart: z.boolean().optional(),
+  onComplete: z.boolean().optional(),
+  onError: z.boolean().optional(),
+  includeResult: z.boolean().optional(),
+  channels: z.array(z.looseObject({ id: z.string() })).optional(),
+})
+
 const domainSpec = {
   name: 'dsh_tasks',
   version: 1,
   tables: {
     items: { valueSchema: itemSchema },
-    notify: { valueSchema: notifyConfigSchema },
+    notify: { valueSchema: storedNotifyRecordSchema },
   },
 }
 
@@ -264,10 +338,15 @@ module.exports = {
     turnEndKind,
     classifyTurnEnd,
     errorSummaryFrom,
+    messageText,
+    lastAssistantText,
+    sessionEventsOf,
+    takeTail,
     formatDuration,
     formatNotifyText,
     NOTIFY_CONFIG_KEY,
     NOTIFY_SERVICE_CANDIDATES,
+    MAX_RESULT_CHARS,
     MAX_RUNS,
   },
 
@@ -492,9 +571,16 @@ module.exports = {
     const warnLog = (message) => {
       try {
         const logger = ctx.logger
-        if (typeof logger === 'function') { logger('dsh-tasks').warn(message); return }
-        if (logger && typeof logger.warn === 'function') { logger.warn(message) }
+        if (typeof logger === 'function') {
+          const named = logger('dsh-tasks')
+          if (named && typeof named.warn === 'function') { named.warn(message); return }
+        } else if (logger && typeof logger.warn === 'function') {
+          logger.warn(message); return
+        }
       } catch {}
+      // The harness logger can be absent in odd fiber states; stderr still
+      // lands in the web logs, so a silent drop is the only thing to avoid.
+      console.warn(`[dsh-tasks] ${message}`)
     }
 
     /** Normalize one entry of `listBots()` output; `undefined` when unusable. */
@@ -562,7 +648,11 @@ module.exports = {
             : kind === 'error' ? config.onError
               : false
         if (!wanted) return
-        const text = formatNotifyText(kind, info)
+        const text = formatNotifyText(kind, {
+          ...info,
+          // The agent's reply only rides along when the user opted in.
+          resultText: config.includeResult ? info.resultText : undefined,
+        })
         const results = await Promise.allSettled(config.channels.map(async (channel) => {
           const svc = ctx.get(channel.service)
           if (!svc || typeof svc.send !== 'function') {
@@ -628,6 +718,10 @@ module.exports = {
             startedAt: run.startedAt,
             durationMs: Date.now() - new Date(run.startedAt).getTime(),
             error: kind === 'error' ? errorSummaryFrom(event.data && event.data.reason) : undefined,
+            // Read at settle time: the final reply is already in the log by
+            // the time turn/end fires. Empty when extraction fails — the
+            // push goes out without a conclusion instead of not at all.
+            resultText: kind === 'complete' ? lastAssistantText(sessionEventsOf(session)) : undefined,
           })
         } catch {}
       })

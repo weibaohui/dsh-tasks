@@ -97,6 +97,8 @@ const ZH = {
   notifyEventStart: '开始执行时',
   notifyEventComplete: '执行完成时',
   notifyEventError: '执行失败时',
+  notifyIncludeResult: '完成通知附带执行结论',
+  notifyIncludeResultHint: '勾选后，完成推送会带上 agent 的最终回复内容（截取末尾 1000 字）。',
   notifyChannels: '推送渠道',
   notifyChannelsEmpty: '尚未添加任何渠道。',
   notifyNoProvider: '未检测到可用的 IM 投递插件（如 dsh-im）。请先安装并完成机器人配置，再刷新本页。',
@@ -192,6 +194,8 @@ const EN = {
   notifyEventStart: 'On start',
   notifyEventComplete: 'On completion',
   notifyEventError: 'On failure',
+  notifyIncludeResult: 'Include the final reply in completion pushes',
+  notifyIncludeResultHint: 'When checked, the completion push carries the agent\'s final reply (last 1000 characters).',
   notifyChannels: 'Channels',
   notifyChannelsEmpty: 'No channels added yet.',
   notifyNoProvider: 'No IM delivery provider detected (e.g. dsh-im). Install and configure one, then reload this page.',
@@ -953,6 +957,15 @@ module.exports = {
                   React.createElement('span', null, t(localeKey))
                 )
               )
+            ),
+            React.createElement('label', { className: 'si-checkbox' },
+              React.createElement('input', {
+                type: 'checkbox',
+                checked: !!notifyCfg.includeResult,
+                onChange: (e) => setNotifyCfg({ ...notifyCfg, includeResult: e.target.checked }),
+              }),
+              React.createElement('span', null, t('notifyIncludeResult')),
+              React.createElement('small', { className: 'si-hint' }, t('notifyIncludeResultHint'))
             ),
             React.createElement('div', { className: 'si-field' },
               React.createElement('span', null, t('notifyChannels')),

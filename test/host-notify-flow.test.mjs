@@ -191,6 +191,8 @@ test('a run notifies start then complete on the spawned session', async () => {
   await flush()
   assert.equal(harness.sent.length, 2)
   assert.ok(harness.sent[1].text.includes('已完成'))
+  // includeResult 默认关闭：完成推送不携带执行结论。
+  assert.ok(!harness.sent[1].text.includes('结论'))
 
   // Foreign sessions and later events on the same session are ignored.
   harness.listeners.get('session/event')(
@@ -250,6 +252,37 @@ test('a spawn failure marks the run failed and pushes the error', async () => {
   assert.equal(harness.sent.length, 1)
   assert.ok(harness.sent[0].text.includes('❌'))
   assert.ok(harness.sent[0].text.includes('workspace vanished'))
+})
+
+test('completion pushes carry the final reply when includeResult is enabled', async () => {
+  const { harness, api } = await boot()
+  await call(api, 'PUT', '/dsh-tasks/api/notify', {
+    enabled: true,
+    onStart: false,
+    onComplete: true,
+    onError: true,
+    includeResult: true,
+    channels: [{ id: 'chan-1', service: 'dshIm', botId: 'bot_1', targetId: 'me' }],
+  })
+  const id = await createItem(api)
+  await call(api, 'POST', '/dsh-tasks/api/run', { id })
+  await flush()
+  const sessionId = harness.created[0].sessionId
+
+  // The session log holds the final assistant reply at settle time; the
+  // handler reads it through the session passed to the event.
+  const log = [
+    { type: 'user/message', data: { content: [{ type: 'text', text: 'prompt' }] } },
+    { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '今日待办已整理完毕' }] } } },
+  ]
+  harness.listeners.get('session/event')(
+    { id: sessionId, snapshotEvents: () => log },
+    { type: 'turn/end', data: { reason: { kind: 'completed' } } },
+  )
+  await flush()
+  assert.equal(harness.sent.length, 1)
+  assert.ok(harness.sent[0].text.includes('已完成'))
+  assert.ok(harness.sent[0].text.includes('结论：今日待办已整理完毕'))
 })
 
 test('a disabled config or uninstalled provider never sends anything', async () => {
