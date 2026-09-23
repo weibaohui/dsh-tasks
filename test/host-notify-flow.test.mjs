@@ -309,6 +309,34 @@ test('every route sits behind the connection trust fence', async () => {
   assert.equal(ok.status, 200)
 })
 
+test('dnd window suppresses pushes while active and lets them through after', async () => {
+  const { harness, api } = await boot()
+  // 计算一个覆盖当前时刻的 ±10 分钟窗口（含跨零点方向）
+  const now = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const hm = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  const start = hm(new Date(now.getTime() - 10 * 60000))
+  const end = hm(new Date(now.getTime() + 10 * 60000))
+  await call(api, 'PUT', '/dsh-tasks/api/notify', {
+    enabled: true,
+    onStart: false,
+    onComplete: true,
+    onError: true,
+    dnd: { enabled: true, start, end },
+    channels: [{ id: 'chan-1', service: 'dshIm', botId: 'bot_1', targetId: 'me' }],
+  })
+  const id = await createItem(api)
+  await call(api, 'POST', '/dsh-tasks/api/run', { id })
+  await flush()
+  const sessionId = harness.created[0].sessionId
+  harness.listeners.get('session/event')(
+    { id: sessionId, snapshotEvents: () => [{ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'done' }] } } }] },
+    { type: 'turn/end', data: { reason: { kind: 'completed' } } },
+  )
+  await flush()
+  assert.equal(harness.sent.length, 0, 'push suppressed inside the dnd window')
+})
+
 test('a disabled config or uninstalled provider never sends anything', async () => {
   const { harness, api } = await boot({ provider: false })
   // Config enabled but the channel references a service that is not installed.
@@ -320,10 +348,18 @@ test('a disabled config or uninstalled provider never sends anything', async () 
     channels: [{ id: 'chan-1', service: 'dshIm', botId: 'bot_1', targetId: 'me' }],
   })
   const id = await createItem(api)
-  await call(api, 'POST', '/dsh-tasks/api/run', { id })
-  await flush()
-  assert.equal(harness.sent.length, 0)
-  assert.ok(harness.warnings.some((entry) => entry.includes("delivery service 'dshIm' is not available")))
+  // 拦截 console.error：warnLog 的兜底出口（真实宿主里唯一保证可见的通道）
+  const origError = console.error
+  const captured = []
+  console.error = (...args) => { captured.push(args.join(' ')) }
+  try {
+    await call(api, 'POST', '/dsh-tasks/api/run', { id })
+    await flush()
+    assert.equal(harness.sent.length, 0)
+    assert.ok(captured.some((line) => line.includes("delivery service 'dshIm' is not available")))
+  } finally {
+    console.error = origError
+  }
 
   // A disabled config gates dispatch even with the provider present.
   harness.installProvider()

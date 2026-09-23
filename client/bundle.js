@@ -246,6 +246,11 @@ window.__ModuleLoader__.load({
       notifyEventError: '执行失败时',
       notifyIncludeResult: '完成通知附带执行结论',
       notifyIncludeResultHint: '勾选后，完成推送会带上 agent 的最终回复内容（截取末尾 1000 字）。',
+      notifyDnd: '免打扰',
+      notifyDndEnabled: '开启免打扰时段',
+      notifyDndStart: '开始',
+      notifyDndEnd: '结束',
+      notifyDndHint: '该时段内的推送会被跳过（支持跨零点，如 22:00–08:00）；执行记录仍可在本页查看。',
       notifyChannels: '推送渠道',
       notifyChannelsEmpty: '尚未添加任何渠道。',
       notifyNoProvider: '未检测到可用的 IM 投递插件（如 dsh-im）。请先安装并完成机器人配置，再刷新本页。',
@@ -343,6 +348,11 @@ window.__ModuleLoader__.load({
       notifyEventError: 'On failure',
       notifyIncludeResult: 'Include the final reply in completion pushes',
       notifyIncludeResultHint: 'When checked, the completion push carries the agent\'s final reply (last 1000 characters).',
+      notifyDnd: 'Do not disturb',
+      notifyDndEnabled: 'Enable do-not-disturb window',
+      notifyDndStart: 'From',
+      notifyDndEnd: 'Until',
+      notifyDndHint: 'Pushes inside the window are skipped (overnight windows like 22:00–08:00 are supported); run history stays available on this page.',
       notifyChannels: 'Channels',
       notifyChannelsEmpty: 'No channels added yet.',
       notifyNoProvider: 'No IM delivery provider detected (e.g. dsh-im). Install and configure one, then reload this page.',
@@ -485,6 +495,7 @@ window.__ModuleLoader__.load({
     .si-chanLabel{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .si-chanOff{color:var(--dsw-alias-state-error-primary);flex-shrink:0}
     .si-btn-sm{font-size:12px;padding:2px 9px;border-radius:6px;flex-shrink:0}
+    .si-cronRow input[type="time"]{padding:5px 8px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:13px;font-family:inherit}
     `)
 
     async function readJson(response) {
@@ -1113,6 +1124,29 @@ window.__ModuleLoader__.load({
                   }),
                   React.createElement('span', null, t('notifyIncludeResult')),
                   React.createElement('small', { className: 'si-hint' }, t('notifyIncludeResultHint'))
+                ),
+                React.createElement('label', { className: 'si-checkbox' },
+                  React.createElement('input', {
+                    type: 'checkbox',
+                    checked: !!notifyCfg.dnd.enabled,
+                    onChange: (e) => setNotifyCfg({ ...notifyCfg, dnd: { ...notifyCfg.dnd, enabled: e.target.checked } }),
+                  }),
+                  React.createElement('span', null, t('notifyDndEnabled'))
+                ),
+                notifyCfg.dnd.enabled && React.createElement('div', { className: 'si-cronRow' },
+                  React.createElement('span', null, t('notifyDndStart')),
+                  React.createElement('input', {
+                    type: 'time',
+                    value: notifyCfg.dnd.start,
+                    onChange: (e) => setNotifyCfg({ ...notifyCfg, dnd: { ...notifyCfg.dnd, start: e.target.value } }),
+                  }),
+                  React.createElement('span', null, t('notifyDndEnd')),
+                  React.createElement('input', {
+                    type: 'time',
+                    value: notifyCfg.dnd.end,
+                    onChange: (e) => setNotifyCfg({ ...notifyCfg, dnd: { ...notifyCfg.dnd, end: e.target.value } }),
+                  }),
+                  React.createElement('small', { className: 'si-hint' }, t('notifyDndHint'))
                 ),
                 React.createElement('div', { className: 'si-field' },
                   React.createElement('span', null, t('notifyChannels')),

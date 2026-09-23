@@ -68,6 +68,11 @@ const NOTIFY_CONFIG_KEY = 'config'
 /** Maximum tail of the agent's final reply included in a completion push. */
 const MAX_RESULT_CHARS = 1000
 
+/** Default do-not-disturb window (23:00–08:00) used when times are absent/invalid. */
+const DEFAULT_DND_START = '23:00'
+const DEFAULT_DND_END = '08:00'
+const HM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/
+
 /** One configured push target: a delivery service plus its routing ids. */
 const notifyChannelSchema = z.object({
   id: z.string().min(1),
@@ -84,6 +89,11 @@ const notifyConfigSchema = z.object({
   onComplete: z.boolean(),
   onError: z.boolean(),
   includeResult: z.boolean(),
+  dnd: z.object({
+    enabled: z.boolean(),
+    start: z.string(),
+    end: z.string(),
+  }),
   channels: z.array(notifyChannelSchema),
 })
 
@@ -101,6 +111,7 @@ function normalizeNotifyConfig(input) {
     onComplete: raw.onComplete !== false,
     onError: raw.onError !== false,
     includeResult: raw.includeResult === true,
+    dnd: sanitizeDnd(raw.dnd),
     channels: channels.map((channel) => notifyChannelSchema.parse({
       id: typeof channel.id === 'string' && channel.id !== '' ? channel.id : `chan-${randomUUID()}`,
       service: channel.service,
@@ -183,6 +194,41 @@ function takeTail(text, max) {
   const trimmed = typeof text === 'string' ? text.trim() : ''
   if (!trimmed || typeof max !== 'number' || !Number.isFinite(max) || max <= 0) return ''
   return trimmed.length > max ? `…${trimmed.slice(-max)}` : trimmed
+}
+
+/** Minutes since midnight for a `HH:mm` string, or `null` when malformed. */
+function parseHm(value) {
+  const m = typeof value === 'string' ? HM_RE.exec(value) : null
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null
+}
+
+/**
+ * Coerce a do-not-disturb block into a safe shape. Invalid or missing times
+ * fall back to the defaults instead of throwing — this runs on stored
+ * records at domain-open time too, where failing loud would kill the host.
+ */
+function sanitizeDnd(raw) {
+  const r = raw && typeof raw === 'object' ? raw : {}
+  return {
+    enabled: r.enabled === true,
+    start: typeof r.start === 'string' && HM_RE.test(r.start) ? r.start : DEFAULT_DND_START,
+    end: typeof r.end === 'string' && HM_RE.test(r.end) ? r.end : DEFAULT_DND_END,
+  }
+}
+
+/**
+ * True when `now` (default: host local time) falls inside the DND window.
+ * `start > end` means an overnight window (e.g. 22:00–08:00); a missing,
+ * malformed, or zero-length window (`start === end`) is never active.
+ */
+function isDndActive(dnd, now = new Date()) {
+  if (!dnd || dnd.enabled !== true) return false
+  const start = parseHm(dnd.start)
+  const end = parseHm(dnd.end)
+  if (start === null || end === null || start === end) return false
+  const current = now.getHours() * 60 + now.getMinutes()
+  if (start < end) return current >= start && current < end
+  return current >= start || current < end
 }
 
 /** Format a millisecond duration as a compact `42s` / `3m12s` / `1h4m` string. */
@@ -342,6 +388,9 @@ module.exports = {
     lastAssistantText,
     sessionEventsOf,
     takeTail,
+    parseHm,
+    sanitizeDnd,
+    isDndActive,
     formatDuration,
     formatNotifyText,
     NOTIFY_CONFIG_KEY,
@@ -568,19 +617,10 @@ module.exports = {
     }
 
     // ── notifications ────────────────────────────────────────────────────────
+    // console.error (stderr) is the only sink guaranteed visible in the web
+    // logs on this host — the named logger service filters warns by level.
     const warnLog = (message) => {
-      try {
-        const logger = ctx.logger
-        if (typeof logger === 'function') {
-          const named = logger('dsh-tasks')
-          if (named && typeof named.warn === 'function') { named.warn(message); return }
-        } else if (logger && typeof logger.warn === 'function') {
-          logger.warn(message); return
-        }
-      } catch {}
-      // The harness logger can be absent in odd fiber states; stderr still
-      // lands in the web logs, so a silent drop is the only thing to avoid.
-      console.warn(`[dsh-tasks] ${message}`)
+      try { console.error(`[dsh-tasks] ${message}`) } catch {}
     }
 
     /** Normalize one entry of `listBots()` output; `undefined` when unusable. */
@@ -643,6 +683,11 @@ module.exports = {
       try {
         const config = notifyConfig
         if (!config.enabled || config.channels.length === 0) return
+        // 免打扰时段内的推送直接跳过（执行记录仍保留在本页可查）。
+        if (isDndActive(config.dnd)) {
+          warnLog(`dsh-tasks: '${kind}' push suppressed by do-not-disturb window ${config.dnd.start}–${config.dnd.end}`)
+          return
+        }
         const wanted = kind === 'start' ? config.onStart
           : kind === 'complete' ? config.onComplete
             : kind === 'error' ? config.onError

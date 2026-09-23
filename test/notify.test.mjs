@@ -20,6 +20,9 @@ const {
   lastAssistantText,
   sessionEventsOf,
   takeTail,
+  parseHm,
+  sanitizeDnd,
+  isDndActive,
   formatDuration,
   formatNotifyText,
   domainSpec,
@@ -114,6 +117,46 @@ test('formatNotifyText appends the conclusion only when resultText is present', 
   const long = formatNotifyText('complete', { title: '晨报', resultText: 'x'.repeat(MAX_RESULT_CHARS + 50) })
   assert.ok(long.includes('结论：…'))
   assert.equal(long.length, '✅ 定时任务「晨报」已完成\n结论：…'.length + MAX_RESULT_CHARS)
+})
+
+test('sanitizeDnd falls back to defaults for missing or malformed times', () => {
+  assert.deepEqual(sanitizeDnd(undefined), { enabled: false, start: '23:00', end: '08:00' })
+  assert.deepEqual(sanitizeDnd({ enabled: true, start: 'bad', end: '25:00' }), { enabled: true, start: '23:00', end: '08:00' })
+  assert.deepEqual(sanitizeDnd({ enabled: true, start: '22:00', end: '08:00' }), { enabled: true, start: '22:00', end: '08:00' })
+})
+
+test('normalizeNotifyConfig carries a sanitized dnd block', () => {
+  const config = normalizeNotifyConfig({ dnd: { enabled: true, start: '22:00', end: '08:00' } })
+  assert.deepEqual(config.dnd, { enabled: true, start: '22:00', end: '08:00' })
+  assert.equal(normalizeNotifyConfig().dnd.enabled, false)
+})
+
+test('parseHm converts HH:mm to minutes and rejects junk', () => {
+  assert.equal(parseHm('00:00'), 0)
+  assert.equal(parseHm('22:30'), 22 * 60 + 30)
+  assert.equal(parseHm('24:00'), null)
+  assert.equal(parseHm('9:30'), null)
+  assert.equal(parseHm(undefined), null)
+})
+
+test('isDndActive handles day, overnight, and boundary windows', () => {
+  const at = (h, m) => new Date(2026, 8, 23, h, m)
+  const day = { enabled: true, start: '09:00', end: '12:00' }
+  assert.equal(isDndActive(day, at(8, 59)), false)
+  assert.equal(isDndActive(day, at(9, 0)), true)
+  assert.equal(isDndActive(day, at(11, 59)), true)
+  assert.equal(isDndActive(day, at(12, 0)), false)
+  const overnight = { enabled: true, start: '22:00', end: '08:00' }
+  assert.equal(isDndActive(overnight, at(21, 59)), false)
+  assert.equal(isDndActive(overnight, at(22, 0)), true)
+  assert.equal(isDndActive(overnight, at(23, 30)), true)
+  assert.equal(isDndActive(overnight, at(3, 0)), true)
+  assert.equal(isDndActive(overnight, at(7, 59)), true)
+  assert.equal(isDndActive(overnight, at(8, 0)), false)
+  // 零长度窗口与未启用永不激活
+  assert.equal(isDndActive({ enabled: true, start: '08:00', end: '08:00' }, at(8, 0)), false)
+  assert.equal(isDndActive({ enabled: false, start: '00:00', end: '23:59' }, at(12, 0)), false)
+  assert.equal(isDndActive(undefined, at(12, 0)), false)
 })
 
 test('turnEndKind tolerates object and bare-string reasons', () => {
