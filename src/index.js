@@ -321,7 +321,7 @@ function buildRecord(input) {
 
 module.exports = {
   name: 'dsh-tasks',
-  inject: ['storageDomain', 'agents', 'agentDefaultModel', 'webServer', 'workspaceRegistry', 'sessionTitle'],
+  inject: ['storageDomain', 'agents', 'agentDefaultModel', 'webServer', 'workspaceRegistry', 'sessionTitle', 'connection'],
 
   // Exposed for the offline test suite only (test/*.test.mjs); Cordis
   // ignores unknown export properties.
@@ -734,6 +734,15 @@ module.exports = {
       path: '/dsh-tasks/api',
       handler: async (req, res) => {
         try {
+          // 与其它 host 路由一致的信任栅栏：connection 服务的 Host/Origin 检查
+          // 加浏览器认证。缺了它，下面每个路由都能被任意网页跨站调用
+          // （增删定时事项、立即执行等于代用户提交任意提示词）。
+          const rejection = ctx.connection.requestRejection(req)
+          if (rejection !== undefined) {
+            res.writeHead(rejection)
+            res.end()
+            return
+          }
           const url = new URL(req.url || '/', 'http://dsh.local')
           const apiPath = url.pathname.replace(/\/+$/, '')
           if (req.method === 'GET' && apiPath.endsWith('/dsh-tasks/api/next')) {

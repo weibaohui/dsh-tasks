@@ -44,6 +44,9 @@ function createHarness() {
     created: [],
     followups: [],
     disposes: [],
+    // Connection trust fence: undefined means "allowed"; set to a status code
+    // in a test to verify every route refuses before doing any work.
+    rejection: undefined,
   }
   const tables = new Map()
   const domain = {
@@ -68,6 +71,7 @@ function createHarness() {
     logger: { warn: (message) => harness.warnings.push(String(message)) },
     storageDomain: { open: async () => domain },
     webServer: { register: (route) => harness.routes.push(route) },
+    connection: { requestRejection: () => harness.rejection },
     agents: {
       create: async (options) => {
         harness.created.push(options)
@@ -283,6 +287,26 @@ test('completion pushes carry the final reply when includeResult is enabled', as
   assert.equal(harness.sent.length, 1)
   assert.ok(harness.sent[0].text.includes('已完成'))
   assert.ok(harness.sent[0].text.includes('结论：今日待办已整理完毕'))
+})
+
+test('every route sits behind the connection trust fence', async () => {
+  const { harness, api } = await boot()
+  harness.rejection = 401
+  // 信任栅栏在最前面：任何方法、任何路径都拿 401，且不触碰存储或 agent。
+  const getItems = await call(api, 'GET', '/dsh-tasks/api')
+  assert.equal(getItems.status, 401, 'unauthenticated listing is refused')
+  const getNotify = await call(api, 'GET', '/dsh-tasks/api/notify')
+  assert.equal(getNotify.status, 401, 'unauthenticated notify config read is refused')
+  const putNotify = await call(api, 'PUT', '/dsh-tasks/api/notify', { enabled: true, channels: [] })
+  assert.equal(putNotify.status, 401, 'unauthenticated notify config write is refused')
+  const postRun = await call(api, 'POST', '/dsh-tasks/api/run', { id: 'item-1' })
+  assert.equal(postRun.status, 401, 'unauthenticated run trigger is refused before spawning an agent')
+  assert.equal(harness.created.length, 0, 'no session was spawned')
+  assert.equal(harness.sent.length, 0, 'no notification was pushed')
+  // 栅栏放行后一切照旧
+  harness.rejection = undefined
+  const ok = await call(api, 'GET', '/dsh-tasks/api/notify')
+  assert.equal(ok.status, 200)
 })
 
 test('a disabled config or uninstalled provider never sends anything', async () => {
