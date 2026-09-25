@@ -505,7 +505,12 @@ module.exports = {
           id: randomUUID(),
           role: 'user',
           content: [{ type: 'text', text: record.prompt }],
-          source: { kind: 'plugin', plugin: 'dsh-tasks' },
+          // dsh 0.1.7-rc.2 退役了通用的 kind:'plugin' 消息源——v4 会话格式
+          // 要求每条 durable 消息带 producer-owned 的 source kind（非空且不为
+          // 'plugin'）。改用本插件自有的 'dsh-tasks' kind（与 cordis-host-runner
+          // 等插件用自己名字作 kind 的约定一致），不再触发
+          // "format v4 message requires a producer-owned source kind"。
+          source: { kind: 'dsh-tasks' },
         }
         handle.agent.followup(message)
         trackedRuns.set(sessionId, { itemId: record.id, title: record.title, startedAt })
