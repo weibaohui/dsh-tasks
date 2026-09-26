@@ -5,7 +5,7 @@
 
 **定时任务插件**：用 cron 表达式定时执行提示词——到点自动开一个新 agent 会话替你干活，也可以随时手动立即执行。
 
-![定时事项：新建任务到保存入库的完整流程](https://raw.githubusercontent.com/weibaohui/dsh-tasks/main/docs/demo.gif)
+![定时事项：新建任务到保存入库的完整流程](https://cdn.jsdelivr.net/gh/weibaohui/dsh-tasks@main/docs/demo.gif)
 
 ## 核心功能
 
@@ -47,7 +47,7 @@ dsh plugin --profile web add @weibaohui/dsh-tasks -w
 
 不想守在电脑前等定时任务跑完？配置通知后，任务的结果与执行结论会主动推到你的聊天软件里：
 
-![通知推送配置页：事件勾选、多渠道管理与执行结论推送](https://raw.githubusercontent.com/weibaohui/dsh-tasks/main/docs/notification-settings.png)
+![通知推送配置页：事件勾选、多渠道管理与执行结论推送](https://cdn.jsdelivr.net/gh/weibaohui/dsh-tasks@main/docs/notification-settings.png)
 
 1. 安装并配置一个 IM 投递插件，例如 [dsh-im](https://github.com/xmanrui/dsh-im)：接入你的机器人，并在其设置页**保存至少一个投递目标**（选择要接收通知的会话或手动填写路由）
 2. 回到「定时任务」设置页底部的**通知推送**区块：启用后勾选想接收的事件（开始 / 完成 / 失败）
