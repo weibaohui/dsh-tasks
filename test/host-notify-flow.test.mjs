@@ -168,6 +168,105 @@ test('discovery exposes the provider, its bot, and saved targets', async () => {
   assert.equal(harness.sent.length, 0)
 })
 
+test('discovery picks up any declared service exposing the delivery contract (issue #9)', async () => {
+  // 模拟宿主 reflect.props：dshIm 声明但未安装、wechatChannel 形状不符、
+  // myRelay 是第三方投递服务——通用发现不应再被硬编码白名单卡死。
+  const harness = createHarness()
+  harness.ctx.reflect = { props: {
+    dshIm: { type: 'service' },
+    wechatChannel: { type: 'service' },
+    myRelay: { type: 'service' },
+    anAccessor: { type: 'accessor', get: () => ({}) },
+  } }
+  harness.services.set('myRelay', {
+    send: async () => {},
+    listBots: async () => [{ botId: 'bot_9', channel: 'sms' }],
+    listTargets: async () => [{ targetId: 'oncall', name: '值班' }],
+  })
+  harness.services.set('wechatChannel', { ingest: async () => {} })
+  plugin.apply(harness.ctx, {})
+  await flush()
+  const probe = await call(harness.routes[0].handler, 'GET', '/dsh-tasks/api/notify')
+  assert.equal(probe.status, 200)
+  const services = probe.body.providers.map((p) => p.service)
+  assert.ok(services.includes('myRelay'), 'a third-party delivery service is discovered')
+  assert.ok(!services.includes('wechatChannel'), 'a service without the delivery contract is not offered')
+  assert.ok(!services.includes('anAccessor'), 'accessor props are never probed')
+  const relay = probe.body.providers.find((p) => p.service === 'myRelay')
+  assert.equal(relay.bots[0].botId, 'bot_9')
+  assert.equal(relay.bots[0].targets[0].targetId, 'oncall')
+})
+
+test('enabled notify with zero channels warns once per config state, never spams (issue #9)', async () => {
+  const { harness, api } = await boot({ provider: false })
+  await call(api, 'PUT', '/dsh-tasks/api/notify', {
+    enabled: true, onStart: true, onComplete: true, onError: true, channels: [],
+  })
+  const id = await createItem(api)
+  const origError = console.error
+  const captured = []
+  console.error = (...args) => { captured.push(args.join(' ')) }
+  try {
+    await call(api, 'POST', '/dsh-tasks/api/run', { id })
+    await flush()
+    await call(api, 'POST', '/dsh-tasks/api/run', { id })
+    await flush()
+    assert.equal(harness.sent.length, 0)
+    assert.equal(
+      captured.filter((line) => line.includes('未配置任何投递通道')).length, 1,
+      'the no-channel warning fires once per config state, not per run',
+    )
+    // 保存配置重置去重标记：状态重现能再次可见
+    await call(api, 'PUT', '/dsh-tasks/api/notify', {
+      enabled: true, onStart: true, onComplete: true, onError: true, channels: [],
+    })
+    await call(api, 'POST', '/dsh-tasks/api/run', { id })
+    await flush()
+    assert.equal(
+      captured.filter((line) => line.includes('未配置任何投递通道')).length, 2,
+      'saving the config re-arms the warning',
+    )
+  } finally {
+    console.error = origError
+  }
+})
+
+test('the settling push outcome lands on the run entry — failure and success (issue #9)', async () => {
+  // 失败：通道指向未安装的服务——任务 ok:true 但推送失败，历史必须可区分
+  const failed = await boot({ provider: false })
+  await enableNotify(failed.api)
+  const failedId = await createItem(failed.api)
+  await call(failed.api, 'POST', '/dsh-tasks/api/run', { id: failedId })
+  await flush()
+  const failedSessionId = failed.harness.created[0].sessionId
+  failed.harness.listeners.get('session/event')(
+    { id: failedSessionId },
+    { type: 'turn/end', data: { reason: { kind: 'completed' } } },
+  )
+  await flush()
+  const failedItems = await call(failed.api, 'GET', '/dsh-tasks/api')
+  const failedRun = failedItems.body.items[0].runs.find((r) => r.sessionId === failedSessionId)
+  assert.equal(failedRun.ok, true, 'the task itself succeeded')
+  assert.equal(failedRun.notify.ok, false, 'the push failure is recorded')
+  assert.ok(failedRun.notify.error.includes("delivery service 'dshIm' is not available"))
+
+  // 成功：投递结果记为 ok
+  const ok = await boot()
+  await enableNotify(ok.api)
+  const okId = await createItem(ok.api)
+  await call(ok.api, 'POST', '/dsh-tasks/api/run', { id: okId })
+  await flush()
+  const okSessionId = ok.harness.created[0].sessionId
+  ok.harness.listeners.get('session/event')(
+    { id: okSessionId },
+    { type: 'turn/end', data: { reason: { kind: 'completed' } } },
+  )
+  await flush()
+  const okItems = await call(ok.api, 'GET', '/dsh-tasks/api')
+  const okRun = okItems.body.items[0].runs.find((r) => r.sessionId === okSessionId)
+  assert.deepEqual(okRun.notify, { ok: true })
+})
+
 test('a run notifies start then complete on the spawned session', async () => {
   const { harness, api } = await boot()
   await enableNotify(api)

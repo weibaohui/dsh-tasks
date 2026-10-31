@@ -190,6 +190,8 @@ window.__ModuleLoader__.load({
           runHistory: '执行记录',
           runOk: '成功',
           runFail: '失败',
+          runNotifyOk: '已推送',
+          runNotifyFail: '推送失败',
           openSession: '打开对话',
           prevPage: '上一页',
           nextPage: '下一页',
@@ -293,6 +295,8 @@ window.__ModuleLoader__.load({
       runHistory: 'Run history',
       runOk: 'OK',
       runFail: 'Failed',
+      runNotifyOk: 'Pushed',
+      runNotifyFail: 'Push failed',
       openSession: 'Open chat',
       prevPage: 'Prev',
       nextPage: 'Next',
@@ -453,6 +457,8 @@ window.__ModuleLoader__.load({
         .si-runTime{color:var(--dsw-alias-label-secondary)}
         .si-runOk{color:var(--dsw-alias-label-secondary)}
         .si-runFail{color:var(--dsw-alias-state-error-primary);word-break:break-word}
+        .si-runNotifyOk{color:var(--dsw-alias-label-secondary);font-size:12px}
+        .si-runNotifyFail{color:var(--dsw-alias-state-error-primary);font-size:12px;word-break:break-word}
         .si-runSession{padding:0;border:none;background:transparent;color:var(--dsw-alias-brand-primary);font-size:11px;cursor:pointer}
         .si-runSession:hover{text-decoration:underline}
         .si-runsPager{display:flex;align-items:center;gap:8px;margin-top:8px;padding-top:6px;border-top:1px dashed var(--dsw-alias-border-l2);font-size:12px;color:var(--dsw-alias-label-secondary)}
@@ -977,6 +983,11 @@ window.__ModuleLoader__.load({
                                   run.ok
                                     ? React.createElement('span', { className: 'si-runOk' }, t('runOk'))
                                     : React.createElement('span', { className: 'si-runFail' }, `${t('runFail')}: ${run.error || ''}`),
+                                  // 投递结果（issue #9）：任务成功但推送失败时，历史里必须看得见
+                                  run.notify && (run.notify.ok
+                                    ? React.createElement('span', { className: 'si-runNotifyOk' }, t('runNotifyOk'))
+                                    : React.createElement('span', { className: 'si-runNotifyFail', title: run.notify.error || '' },
+                                      `${t('runNotifyFail')}${run.notify.error ? '：' + run.notify.error : ''}`)),
                                   run.sessionId && canOpenSession && React.createElement('button', {
                                     type: 'button',
                                     className: 'si-runSession',

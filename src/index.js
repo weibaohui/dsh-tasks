@@ -15,7 +15,11 @@
  * session's first `turn/end` settles the run, and the result goes to every
  * channel configured in the settings UI. Providers are soft dependencies —
  * absent services disable notification delivery without blocking the plugin.
- * The only runtime
+ * Discovery enumerates every service declared on the host context and probes
+ * it for the delivery contract, so any plugin exposing
+ * `{ send, listBots, listTargets }` is offered in the settings UI; a run
+ * records its push outcome (`runs[].notify`) so a failed delivery never
+ * looks identical to success (issue #9). The only runtime
  * dependencies are plain npm packages (croner, zod).
  */
 
@@ -32,6 +36,8 @@ const runSchema = z.object({
   ok: z.boolean(),
   sessionId: z.string().optional(),
   error: z.string().optional(),
+  /** Settling push's delivery outcome (issue #9); absent = nothing attempted. */
+  notify: z.object({ ok: z.boolean(), error: z.string().optional() }).optional(),
 })
 
 /** Durable shape of one scheduled item. */
@@ -59,8 +65,35 @@ const itemSchema = z.object({
 // lookup — never through `inject`, which would turn dsh-im into a hard
 // dependency and keep this plugin from activating without it.
 
-/** cordis service names probed by the provider discovery endpoint. */
+/** cordis service names probed by the provider discovery endpoint. Kept as a
+ *  fallback for harnesses without a reflect surface; on the real host the
+ *  candidate list is derived from every declared service (see
+ *  notifyServiceCandidates), so any delivery plugin is discovered — the
+ *  hardcoded list is no longer the single gate (issue #9). */
 const NOTIFY_SERVICE_CANDIDATES = ['dshIm']
+
+/**
+ * Candidate delivery service names: every service declared on the host
+ * context (cordis `ctx.reflect.props` — includes other plugins' `provide()`
+ * calls, verified against the vendored cordis) plus the built-in fallback
+ * list. listProviders() probes each candidate for the delivery contract, so
+ * a plugin exposing `{ send, listBots, listTargets }` shows up in the
+ * settings UI without touching this file — the hard-coded single service
+ * name made discovery a dead end on installs without it (issue #9).
+ */
+function notifyServiceCandidates(ctx) {
+  const names = new Set(NOTIFY_SERVICE_CANDIDATES)
+  try {
+    const props = ctx && ctx.reflect && ctx.reflect.props
+    if (props && typeof props === 'object') {
+      for (const [name, def] of Object.entries(props)) {
+        // Accessor props run their getter on read — probe provided services only.
+        if (def && typeof def === 'object' && def.type === 'service') names.add(name)
+      }
+    }
+  } catch {}
+  return [...names]
+}
 
 /** Stable key of the single notify-settings record in the `notify` table. */
 const NOTIFY_CONFIG_KEY = 'config'
@@ -395,6 +428,7 @@ module.exports = {
     formatNotifyText,
     NOTIFY_CONFIG_KEY,
     NOTIFY_SERVICE_CANDIDATES,
+    notifyServiceCandidates,
     MAX_RESULT_CHARS,
     MAX_RUNS,
   },
@@ -412,6 +446,9 @@ module.exports = {
     let table
     let notifyTable
     let notifyConfig = normalizeNotifyConfig()
+    // issue #9：启用但零通道的告警按状态去重（cron 任务高频触发，逐次告警等于刷屏）；
+    // 配置保存时重置，状态重新出现能再次可见。
+    let warnedNoChannels = false
     const jobs = new Map()
     // In-memory run tracking for completion notifications, keyed by the
     // sessionId this plugin spawned. A host restart drops pending entries —
@@ -653,13 +690,21 @@ module.exports = {
      * referenced by a configured channel) and describe its bots and saved
      * targets for the settings UI. A provider missing, inactive, or failing
      * to enumerate simply drops out — discovery is best-effort by design.
+     * Discovered candidates must expose the full delivery contract
+     * (`send` + `listBots`) so unrelated services that merely happen to have
+     * a `send` never surface here; already-configured channels keep the
+     * lenient `send`-only read so an existing provider entry stays visible.
      */
     async function listProviders() {
       const configured = new Set(notifyConfig.channels.map((channel) => channel.service))
       const providers = []
-      for (const service of new Set([...NOTIFY_SERVICE_CANDIDATES, ...configured])) {
+      const seen = new Set()
+      const probe = async (service, requireListBots) => {
+        if (seen.has(service)) return
+        seen.add(service)
         const svc = ctx.get(service)
-        if (!svc || typeof svc.send !== 'function') continue
+        if (!svc || typeof svc.send !== 'function') return
+        if (requireListBots && typeof svc.listBots !== 'function') return
         const provider = { service, bots: [] }
         try {
           if (typeof svc.listBots === 'function') {
@@ -680,24 +725,41 @@ module.exports = {
         } catch {}
         providers.push(provider)
       }
+      for (const service of notifyServiceCandidates(ctx)) await probe(service, true)
+      for (const service of configured) await probe(service, false)
       return providers
     }
 
-    /** Push one notification to every configured channel (best-effort, allSettled). */
+    /**
+     * Push one notification to every configured channel (best-effort,
+     * allSettled). Returns the delivery summary for the run record —
+     * `{ ok, error? }` after a real attempt, `undefined` when nothing was
+     * attempted (disabled, DND, event not subscribed, no channels) so a
+     * failed push never looks identical to success (issue #9).
+     */
     async function dispatchNotify(kind, info) {
       try {
         const config = notifyConfig
-        if (!config.enabled || config.channels.length === 0) return
+        if (!config.enabled) return undefined
+        if (config.channels.length === 0) {
+          // 启用但零通道时推送被静默丢弃——默认安装（未装 dsh-im）下这是常态。
+          // 至少在日志里响一次；配置保存后重置，状态再次出现能再次可见。
+          if (!warnedNoChannels) {
+            warnedNoChannels = true
+            warnLog('dsh-tasks: 通知推送已启用但未配置任何投递通道——任务结果不会送达任何渠道（设置页「通知推送」里添加）')
+          }
+          return undefined
+        }
         // 免打扰时段内的推送直接跳过（执行记录仍保留在本页可查）。
         if (isDndActive(config.dnd)) {
           warnLog(`dsh-tasks: '${kind}' push suppressed by do-not-disturb window ${config.dnd.start}–${config.dnd.end}`)
-          return
+          return undefined
         }
         const wanted = kind === 'start' ? config.onStart
           : kind === 'complete' ? config.onComplete
             : kind === 'error' ? config.onError
               : false
-        if (!wanted) return
+        if (!wanted) return undefined
         const text = formatNotifyText(kind, {
           ...info,
           // The agent's reply only rides along when the user opted in.
@@ -710,15 +772,43 @@ module.exports = {
           }
           await svc.send(channel.botId, channel.targetId, text)
         }))
+        const failures = []
         results.forEach((result, index) => {
           if (result.status === 'rejected') {
             const channel = config.channels[index]
-            warnLog(`dsh-tasks: notify '${kind}' via ${channel.service}/${channel.targetId} failed: ${String((result.reason && result.reason.message) || result.reason)}`)
+            const message = String((result.reason && result.reason.message) || result.reason)
+            failures.push(`${channel.service}/${channel.targetId}: ${message}`)
+            warnLog(`dsh-tasks: notify '${kind}' via ${channel.service}/${channel.targetId} failed: ${message}`)
           }
         })
+        return failures.length === 0
+          ? { ok: true }
+          : { ok: false, error: failures.slice(0, 3).join(' | ').slice(0, 200) }
       } catch (error) {
         warnLog(`dsh-tasks: dispatchNotify failed: ${String((error && error.message) || error)}`)
+        return { ok: false, error: String((error && error.message) || error).slice(0, 200) }
       }
+    }
+
+    /**
+     * Write the settling push's delivery outcome into the run's history entry
+     * (issue #9): "任务成功但推送失败" 在页面上必须与纯成功可区分。Best-effort —
+     * 历史记账绝不能把事件处理器拖垮；run 条目被裁剪/未持久化时静默跳过。
+     */
+    async function recordNotifyOutcome(itemId, sessionId, outcome) {
+      try {
+        if (!outcome || table === undefined) return
+        const record = table.get(itemId)
+        if (record === undefined || !Array.isArray(record.runs)) return
+        let changed = false
+        const runs = record.runs.map((run) => {
+          if (run.sessionId !== sessionId || run.notify !== undefined) return run
+          changed = true
+          return { ...run, notify: outcome }
+        })
+        if (!changed) return
+        await table.put(itemId, { ...record, runs })
+      } catch {}
     }
 
     // ── lifecycle: open the domain and reschedule every enabled item ─────────
@@ -763,7 +853,7 @@ module.exports = {
           trackedRuns.delete(sessionId)
           const kind = classifyTurnEnd(turnEndKind(event.data && event.data.reason))
           if (kind === undefined) return
-          void dispatchNotify(kind, {
+          const info = {
             title: run.title,
             startedAt: run.startedAt,
             durationMs: Date.now() - new Date(run.startedAt).getTime(),
@@ -772,7 +862,9 @@ module.exports = {
             // the time turn/end fires. Empty when extraction fails — the
             // push goes out without a conclusion instead of not at all.
             resultText: kind === 'complete' ? lastAssistantText(sessionEventsOf(session)) : undefined,
-          })
+          }
+          // 投递结果写进该 run 的历史条目（issue #9）：推送失败必须与纯成功可区分。
+          void dispatchNotify(kind, info).then((outcome) => recordNotifyOutcome(run.itemId, sessionId, outcome))
         } catch {}
       })
       return () => { try { dispose() } catch {} }
@@ -894,6 +986,7 @@ module.exports = {
             if (notifyTable === undefined) throw new Error('notify settings are not ready yet')
             await notifyTable.put(NOTIFY_CONFIG_KEY, next)
             notifyConfig = next
+            warnedNoChannels = false
             sendJson(res, 200, { config: notifyConfig })
             return
           }

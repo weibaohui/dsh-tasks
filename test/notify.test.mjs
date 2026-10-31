@@ -26,6 +26,8 @@ const {
   formatDuration,
   formatNotifyText,
   domainSpec,
+  runSchema,
+  notifyServiceCandidates,
   NOTIFY_CONFIG_KEY,
   NOTIFY_SERVICE_CANDIDATES,
   MAX_RESULT_CHARS,
@@ -228,4 +230,23 @@ test('the notify table schema accepts records written by older versions', () => 
 test('notify config key and provider candidates are stable', () => {
   assert.equal(NOTIFY_CONFIG_KEY, 'config')
   assert.ok(NOTIFY_SERVICE_CANDIDATES.includes('dshIm'))
+})
+
+test('runSchema tolerates the notify delivery outcome (issue #9)', () => {
+  const base = { at: '2026-10-31T00:00:00Z', ok: true }
+  assert.equal(runSchema.safeParse(base).success, true, 'records from older versions still validate')
+  const parsed = runSchema.safeParse({ ...base, notify: { ok: false, error: 'dshIm is not available' } })
+  assert.equal(parsed.success, true)
+  assert.equal(parsed.data.notify.ok, false)
+  assert.equal(runSchema.safeParse({ ...base, notify: { ok: 'yes' } }).success, false)
+})
+
+test('notifyServiceCandidates merges declared services with the fallback list (issue #9)', () => {
+  const ctx = { reflect: { props: { dshIm: { type: 'service' }, myRelay: { type: 'service' }, anAccessor: { type: 'accessor' } } } }
+  const names = notifyServiceCandidates(ctx)
+  assert.ok(names.includes('dshIm') && names.includes('myRelay'), 'declared services join the candidates')
+  assert.ok(!names.includes('anAccessor'), 'accessor props are never probed (their getter would run)')
+  assert.deepEqual(notifyServiceCandidates(undefined), ['dshIm'], 'no reflect surface → hardcoded fallback')
+  assert.deepEqual(notifyServiceCandidates({}), ['dshIm'])
+  assert.deepEqual(notifyServiceCandidates({ reflect: {} }), ['dshIm'])
 })
